@@ -1,0 +1,7 @@
+cd frontend
+
+npm install
+
+
+cd frontend
+npm start

@@ -1,0 +1,131 @@
+// استيراد المكتبات المطلوبة لإدارة حالة المصادقة
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import axios from 'axios';
+
+// إنشاء سياق المصادقة
+const AuthContext = createContext();
+
+// دالة مخصصة لاستخدام سياق المصادقة
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
+
+// مزود سياق المصادقة - يدير حالة تسجيل الدخول للمستخدم
+export const AuthProvider = ({ children }) => {
+  // حالة المستخدم الحالي
+  const [user, setUser] = useState(null);
+  // رمز الوصول JWT - يتم استرجاعه من التخزين المحلي
+  const [token, setToken] = useState(localStorage.getItem('token'));
+  // حالة التحميل - تظهر أثناء التحقق من صحة الرمز
+  const [loading, setLoading] = useState(true);
+
+  // إعداد رؤوس axios الافتراضية عند تغيير الرمز
+  useEffect(() => {
+    if (token) {
+      // إضافة رمز الوصول إلى رؤوس الطلبات
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    } else {
+      // إزالة رمز الوصول من رؤوس الطلبات
+      delete axios.defaults.headers.common['Authorization'];
+    }
+  }, [token]);
+
+  // التحقق من صحة الرمز عند تحميل التطبيق
+  useEffect(() => {
+    const checkAuth = async () => {
+      if (token) {
+        try {
+          // التحقق من صحة الرمز مع الخادم
+          const response = await axios.get('http://localhost:8000/me');
+          setUser(response.data);
+        } catch (error) {
+          console.error('Authentication check failed:', error);
+          logout();
+        }
+      }
+      setLoading(false);
+    };
+
+    checkAuth();
+  }, [token]);
+
+  // دالة تسجيل الدخول
+  const login = async (username, password, role) => {
+    try {
+      // إرسال بيانات الاعتماد إلى الخادم
+      const response = await axios.post('http://localhost:8000/login', {
+        username,
+        password,
+        role
+      });
+      
+      const { access_token } = response.data;
+      setToken(access_token);
+      // حفظ الرمز في التخزين المحلي للاستمرارية
+      localStorage.setItem('token', access_token);
+      
+      // الحصول على معلومات المستخدم
+      const userResponse = await axios.get('http://localhost:8000/me');
+      setUser(userResponse.data);
+      
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error.response?.data?.detail || 'Login failed' 
+      };
+    }
+  };
+
+  // دالة التسجيل
+  const register = async (username, email, password, role, specialization = null) => {
+    try {
+      // إرسال بيانات التسجيل إلى الخادم
+      const response = await axios.post('http://localhost:8000/register', {
+        username,
+        email,
+        password,
+        role,
+        specialization
+      });
+      
+      return { success: true, user: response.data };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error.response?.data?.detail || 'Registration failed' 
+      };
+    }
+  };
+
+  // دالة تسجيل الخروج
+  const logout = () => {
+    setUser(null);
+    setToken(null);
+    // إزالة الرمز من التخزين المحلي
+    localStorage.removeItem('token');
+    // إزالة الرمز من رؤوس axios
+    delete axios.defaults.headers.common['Authorization'];
+  };
+
+  // القيم المقدمة من السياق
+  const value = {
+    user,  // بيانات المستخدم الحالي
+    token,  // رمز الوصول
+    loading,  // حالة التحميل
+    login,  // دالة تسجيل الدخول
+    register,  // دالة التسجيل
+    logout,  // دالة تسجيل الخروج
+    isAuthenticated: !!token  // حالة تسجيل الدخول (صحيح/خطأ)
+  };
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
+}; 

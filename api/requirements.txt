@@ -1,0 +1,29 @@
+# الاحتفاظ بالمتطلبات الأصلية فقط لروبوت المحادثة RAG API
+requests>=2.31.0  # مكتبة للطلبات HTTP
+pydantic>=2.5.0  # مكتبة للتحقق من صحة البيانات وإنشاء النماذج
+fastapi  # إطار عمل سريع لبناء واجهات برمجة التطبيقات
+uvicorn  # خادم ASGI لتشغيل تطبيقات FastAPI
+python-dotenv  # مكتبة لتحميل متغيرات البيئة من ملف .env
+langchain  # إطار عمل للذكاء الاصطناعي وتطبيقات اللغة
+langchain-community  # مكتبات المجتمع الإضافية لـ LangChain
+langchain-text-splitters  # مكتبة لتقسيم النصوص في LangChain
+openai  # مكتبة عميل OpenAI API
+psycopg2-binary  # محرك قاعدة بيانات PostgreSQL
+transformers  # مكتبة Hugging Face للنماذج اللغوية
+torch  # إطار عمل PyTorch للتعلم الآلي
+pypdf  # مكتبة لقراءة ملفات PDF
+sentence-transformers  # مكتبة لنماذج التضمين الدلالي
+pgvector  # مكتبة للتضمين الدلالي لقاعدة البيانات PostgreSQL
+bs4
+pandas
+tavily-python>=0.7.0
+# المصادقة والأمان
+python-jose[cryptography]>=3.3.0  # مكتبة لإنشاء وفك تشفير رموز JWT
+passlib[bcrypt]>=1.7.4  # مكتبة لتشفير كلمات المرور
+bcrypt==4.0.1  # نسخة متوافقة مع passlib
+python-multipart>=0.0.6  # مكتبة لمعالجة البيانات متعددة الأجزاء (رفع الملفات)
+email-validator>=2.0.0  # مكتبة للتحقق من صحة عناوين البريد الإلكتروني
+
+# قاعدة البيانات
+sqlalchemy>=2.0.0  # إطار عمل ORM لقواعد البيانات
+alembic>=1.12.0  # أداة لإدارة ترحيلات قاعدة البيانات
