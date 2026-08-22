@@ -123,14 +123,13 @@ const Chat = () => {
     const userMessage = newMessage;
     setNewMessage('');
 
-    // إضافة رسالة المستخدم فوراً
     const tempId = Date.now();
     setMessages(prev => [
       ...prev,
       {
         id: tempId,
         message: userMessage,
-        response: null,
+        response: '',
         created_at: new Date().toISOString(),
         context: null,
         loading: true
@@ -138,24 +137,32 @@ const Chat = () => {
     ]);
 
     try {
-      const response = await chatAPI.sendMessage(
-        userMessage,
-        settings.topK,
-        settings.temperature,
-        settings.maxOutput,
-        enableWebSearch
-      );
-      // استبدال الرسالة المؤقتة بالرد الحقيقي
+      const response = await chatAPI.sendMessageStream(userMessage, {
+        topK: settings.topK,
+        temperature: settings.temperature,
+        outputLength: settings.maxOutput,
+        enableWebSearch,
+        onToken: (_token, fullText) => {
+          setMessages(prev => prev.map(m =>
+            m.id === tempId
+              ? { ...m, response: fullText, loading: false }
+              : m
+          ));
+        }
+      });
       setMessages(prev => prev.map(m =>
         m.id === tempId
-          ? { ...response, id: tempId, message: userMessage, loading: false }
+          ? {
+              ...response,
+              id: response.id || tempId,
+              message: userMessage,
+              loading: false
+            }
           : m
       ));
     } catch (error) {
-      // Build a detailed error message
       let errorMsg = 'Error: Could not get response from bot.';
       if (error.response) {
-        // Backend responded with an error
         errorMsg += ` (Status: ${error.response.status}`;
         if (error.response.data && error.response.data.detail) {
           errorMsg += `, Detail: ${error.response.data.detail}`;
@@ -193,6 +200,7 @@ const Chat = () => {
         }
       }
       await loadFiles();
+      await loadRagStats();
       // Reset specialization after upload
       setSelectedSpecialization('');
     } catch (error) {
@@ -214,19 +222,19 @@ const Chat = () => {
     const newUploads = acceptedFiles.filter(f => f.name.toLowerCase().endsWith('.pdf')).map(file => ({
       id: `${file.name}-${Date.now()}`,
       name: file.name,
-      status: 'Uploading...'
+      status: 'Uploading & indexing...'
     }));
     setUploadingPDFs(prev => [...prev, ...newUploads]);
     setUploadingRagDoc(true);
     for (const file of acceptedFiles) {
       if (!file.name.toLowerCase().endsWith('.pdf')) continue;
-      const uploadId = `${file.name}-${Date.now()}`;
       try {
         await ragAPI.uploadDocument(file, true);
-        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading...' ? { ...f, status: 'Success' } : f));
+        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading & indexing...' ? { ...f, status: 'Success' } : f));
         await loadFiles();
+        await loadRagStats();
       } catch (error) {
-        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading...' ? { ...f, status: 'Fail to upload' } : f));
+        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading & indexing...' ? { ...f, status: 'Fail to upload' } : f));
         console.error('Error uploading RAG document:', error);
       }
     }
@@ -445,7 +453,12 @@ const Chat = () => {
                               <span></span><span></span><span></span>
                             </div>
                           ) : (
-                            <div className="message-text">{message.response}</div>
+                            <div className="message-text">
+                              {message.response}
+                              {loading && messages[messages.length - 1]?.id === message.id && message.response ? (
+                                <span className="stream-cursor">▍</span>
+                              ) : null}
+                            </div>
                           )}
                           {message.context && settings.showContext && !message.loading && (
                             <details className="context-details">
@@ -489,7 +502,7 @@ const Chat = () => {
                   </React.Fragment>
                 ))
               )}
-              {loading && (
+              {loading && messages.length > 0 && !messages[messages.length - 1]?.response && (
                 <div className="message">
                   <div className="message-bot">
                     <div className="message-avatar"><MessageSquare size={20} /></div>
@@ -579,15 +592,29 @@ const Chat = () => {
                     </small>
                   </div>
                 )}
-                <div {...getRootProps()} className={`dropzone ${isDragActive ? 'active' : ''}`} style={{ marginBottom: 16 }}>
-                  <input {...getInputProps()} />
+                <div {...getRootProps()} className={`dropzone ${isDragActive ? 'active' : ''} ${uploadingFile ? 'uploading' : ''}`} style={{ marginBottom: 16, position: 'relative' }}>
+                  <input {...getInputProps()} disabled={uploadingFile} />
                   {uploadingFile ? (
-                    <p>Uploading file...</p>
+                    <div className="upload-progress-overlay">
+                      <Loader className="spin" size={40} />
+                      <p>Uploading and indexing…</p>
+                      <small>Please wait until indexing finishes. Chat will use this file immediately after.</small>
+                    </div>
                   ) : isDragActive ? (
                     <p>Drop files here...</p>
                   ) : (
                     <p>Drag & drop files here, or click to select files</p>
                   )}
+                </div>
+              </div>
+            )}
+            {(uploadingFile || uploadingRagDoc) && (
+              <div className="global-upload-overlay" aria-live="polite">
+                <div className="global-upload-card">
+                  <Loader className="spin" size={48} />
+                  <h3>Processing document</h3>
+                  <p>Uploading and indexing into the knowledge base…</p>
+                  <small>Do not close this page until the spinner finishes.</small>
                 </div>
               </div>
             )}

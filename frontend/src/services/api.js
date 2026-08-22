@@ -65,16 +65,87 @@ export const chatAPI = {
     return response.data;
   },
 
-  // Send message and get response
+  // Send message and get response (legacy non-stream)
   sendMessage: async (message, topK = 3, temperature = 0.2, outputLength = 'mid', enableWebSearch = false) => {
     const response = await axios.post(`${API_BASE_URL}/chat`, {
-      message,  // Message text
-      top_k: topK,  // Number of results retrieved from semantic search
-      temperature,  // Creativity level in answer generation
-      output_length: outputLength,  // Required answer length
-      enable_web_search: enableWebSearch  // Enable web search when internal knowledge is insufficient
+      message,
+      top_k: topK,
+      temperature,
+      output_length: outputLength,
+      enable_web_search: enableWebSearch
     });
     return response.data;
+  },
+
+  // Streaming chat — calls onToken for each chunk; resolves with final metadata
+  sendMessageStream: async (
+    message,
+    { topK = 3, temperature = 0.2, outputLength = 'mid', enableWebSearch = false, onToken } = {}
+  ) => {
+    const token = localStorage.getItem('token');
+    const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        message,
+        top_k: topK,
+        temperature,
+        output_length: outputLength,
+        enable_web_search: enableWebSearch,
+      }),
+    });
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const errBody = await response.json();
+        detail = errBody.detail || detail;
+      } catch (_) { /* ignore */ }
+      throw new Error(detail);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+    let meta = { id: null, created_at: new Date().toISOString(), context: null };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        try {
+          const payload = JSON.parse(line.slice(5).trim());
+          if (payload.token) {
+            fullText += payload.token;
+            if (onToken) onToken(payload.token, fullText);
+          }
+          if (payload.done) {
+            meta = {
+              id: payload.id,
+              created_at: payload.created_at || meta.created_at,
+              context: payload.context || null,
+            };
+          }
+        } catch (_) { /* ignore partial JSON */ }
+      }
+    }
+
+    return {
+      id: meta.id,
+      message,
+      response: fullText,
+      created_at: meta.created_at,
+      context: meta.context,
+    };
   }
 };
 
@@ -95,6 +166,7 @@ export const fileAPI = {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        timeout: 600000, // indexing can take several minutes
       });
       return response.data;
     } catch (error) {

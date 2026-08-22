@@ -1,6 +1,6 @@
 # استيراد المكتبات المطلوبة لبناء واجهة برمجة التطبيقات
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Depends, status, Body, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
@@ -32,7 +32,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Local imports (works with Root Directory=api on Render, and with uvicorn api.main:app)
 try:
-    from database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables
+    from database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables, SessionLocal
     from auth import (
         get_password_hash,
         verify_password,
@@ -51,7 +51,7 @@ try:
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
-    from api.database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables
+    from api.database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables, SessionLocal
     from api.auth import (
         get_password_hash,
         verify_password,
@@ -127,6 +127,11 @@ app.add_middleware(
 async def root():
     """نقطة نهاية أساسية للتحقق من تشغيل الخادم"""
     return {"message": "Students Support API is running!"}
+
+@app.head("/")
+async def root_head():
+    """Render health checks use HEAD /"""
+    return {"message": "ok"}
 
 @app.get("/health")
 async def health_check():
@@ -214,22 +219,15 @@ async def general_chat(request: GeneralChatRequest):
         # Create a temporary user for general chat
         temp_user_id = 999999  # Use a special ID for general chat
         
-        # Index files if needed
+        # Never index during chat — only search already-indexed docs
         context_texts = []
-        if file_paths:
-            existing_files = [path for path in file_paths if os.path.exists(path)]
-            if existing_files:
-                indexing_result = rag_manager.index_available_files(existing_files, temp_user_id)
-                logger.info(f"Indexing result for general inquiry: {indexing_result}")
-        
-                # Try to get context from the RAG system
-                try:
-                    retrieved_docs = rag_manager.query(request.message, temp_user_id, top_k=3)
-                    context_texts = retrieved_docs if retrieved_docs else []
-                    logger.info(f"Found {len(context_texts)} relevant documents for general inquiry")
-                except Exception as e:
-                    logger.warning(f"Error querying documents: {e}")
-                    context_texts = []
+        try:
+            retrieved_docs = rag_manager.query(request.message, temp_user_id, top_k=3)
+            context_texts = retrieved_docs if retrieved_docs else []
+            logger.info(f"Found {len(context_texts)} relevant documents for general inquiry")
+        except Exception as e:
+            logger.warning(f"Error querying documents: {e}")
+            context_texts = []
         
         # Detect language of the question
         detected_language = detect_language(request.message)
@@ -263,16 +261,13 @@ async def general_chat(request: GeneralChatRequest):
             internal_answer = rag_manager.generate_answer(
                 full_context,
                 temp_user_id,
-                top_k=3
+                top_k=3,
+                context_texts=context_texts,
             )
         else:
-            # If no documents found, use only the question
             full_context = f"{language_instruction}\n\nUser Question: {request.message}"
-            internal_answer = rag_manager.generate_answer(
-                full_context,
-                temp_user_id,
-                top_k=3
-            )
+            parts = list(rag_manager.generate_from_context(full_context, [], stream=False))
+            internal_answer = parts[0] if parts else "No indexed documents found yet."
         
         # Check if this is a follow-up question (like "in more details", "tell me more", etc.)
         follow_up_indicators = [
@@ -606,40 +601,20 @@ async def send_message(
             allowed_files = []
         
         file_paths = [os.path.join(UPLOADS_DIR, str(f.filename)) for f in allowed_files if f.filename is not None]
-        
-        # التحقق من وجود ملفات متاحة للمستخدم
-        if file_paths:
-            # التحقق من وجود ملفات في النظام
-            existing_files = [path for path in file_paths if os.path.exists(path)]
-            
-            if existing_files:
-                # استخدام النظام الجديد لفهرسة الملفات مع التتبع
-                indexing_result = rag_manager.index_available_files(existing_files, current_user.id)
-                
-                # Always try to get context from the RAG system, regardless of indexing result
-                try:
-                    # Search for relevant documents in the user's indexed collection
-                    print(f"🔍 Searching for documents for user {current_user.id} with query: {conversation_context[:100]}...")
-                    retrieved_docs = rag_manager.query(conversation_context, current_user.id, top_k=top_k)
-                    print(f"📄 Found {len(retrieved_docs) if retrieved_docs else 0} documents")
-                    context_texts = retrieved_docs if retrieved_docs else []
-                    
-                    # إضافة معلومات عن الفهرسة
-                    indexing_info = {
-                        "files_indexed": indexing_result["files_indexed"],
-                        "message": indexing_result["message"],
-                        "documents_found": len(context_texts)
-                    }
-                except Exception as e:
-                    print(f"❌ Error querying documents: {e}")
-                    context_texts = []
-                    indexing_info = {"files_indexed": 0, "message": f"Error querying documents: {str(e)}"}
-            else:
-                context_texts = []
-                indexing_info = {"files_indexed": 0, "message": "No files found on disk"}
-        else:
+
+        # Chat never indexes — indexing happens only at upload time.
+        # Search the already-indexed vectors for this user.
+        context_texts = []
+        indexing_info = {"files_indexed": 0, "message": "Using pre-indexed documents only"}
+        try:
+            print(f"🔍 Searching indexed docs for user {current_user.id}: {message_data.message[:100]}...")
+            context_texts = rag_manager.query(message_data.message, current_user.id, top_k=top_k) or []
+            indexing_info["documents_found"] = len(context_texts)
+            print(f"📄 Found {len(context_texts)} documents")
+        except Exception as e:
+            print(f"❌ Error querying documents: {e}")
             context_texts = []
-            indexing_info = {"files_indexed": 0, "message": "No files available for your role"}
+            indexing_info = {"files_indexed": 0, "message": f"Error querying documents: {str(e)}"}
         
         # Detect language of the question
         detected_language = detect_language(message_data.message)
@@ -656,19 +631,17 @@ async def send_message(
             document_context = "\n\n".join(context_texts)
             full_context = f"{language_instruction}\n\nDocument Context:\n{document_context}\n\nConversation:\n{conversation_context}"
             internal_answer = rag_manager.generate_answer(
-                full_context,  # Use full context with documents
-                current_user.id,
-                top_k=top_k
-            )
-        else:
-            # If no documents found, use only conversation context
-            full_context = f"{language_instruction}\n\nConversation:\n{conversation_context}"
-            internal_answer = rag_manager.generate_answer(
                 full_context,
                 current_user.id,
-                top_k=top_k
+                top_k=top_k,
+                context_texts=context_texts,
             )
-        
+        else:
+            # No docs: answer from conversation only (no second vector search)
+            full_context = f"{language_instruction}\n\nConversation:\n{conversation_context}"
+            parts = list(rag_manager.generate_from_context(full_context, [], stream=False))
+            internal_answer = parts[0] if parts else "No indexed documents found for your account yet."
+
         # Agentic AI: If web search is enabled, ALWAYS perform web search and prioritize results
         if message_data.enable_web_search:
             logger.info("🔍 Web search enabled, performing search...")
@@ -778,6 +751,108 @@ Now provide a direct answer using the web search results above. Do NOT say you d
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
 
+@app.post("/chat/stream")
+async def send_message_stream(
+    message_data: ChatMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Streaming chat: indexes never run here. Tokens are sent as SSE as they arrive.
+    """
+    if not rag_manager:
+        raise HTTPException(status_code=500, detail="RAG Manager not initialized")
+
+    import json as _json
+
+    top_k = message_data.top_k or 3
+    recent_messages = db.query(ChatMessage).filter(
+        ChatMessage.user_id == current_user.id
+    ).order_by(ChatMessage.created_at.desc()).limit(5).all()
+
+    context_messages = []
+    for msg in reversed(recent_messages):
+        context_messages.append(f"User: {msg.message}")
+        context_messages.append(f"Assistant: {msg.response}")
+    context_messages.append(f"User: {message_data.message}")
+    conversation_context = "\n".join(context_messages)
+
+    context_texts = []
+    try:
+        context_texts = rag_manager.query(message_data.message, current_user.id, top_k=top_k) or []
+    except Exception as e:
+        logger.warning(f"Stream query failed: {e}")
+        context_texts = []
+
+    detected_language = detect_language(message_data.message)
+    language_instruction = get_language_instruction(detected_language)
+
+    if context_texts:
+        document_context = "\n\n".join(context_texts)
+        prompt = f"{language_instruction}\n\nDocument Context:\n{document_context}\n\nConversation:\n{conversation_context}"
+    else:
+        prompt = f"{language_instruction}\n\nConversation:\n{conversation_context}"
+
+    # Optional web search (non-stream gather, then stream the final answer)
+    used_web_search = False
+    web_search_results = None
+    if message_data.enable_web_search:
+        try:
+            web_search_results = perform_web_search(message_data.message, max_results=5)
+            if web_search_results:
+                used_web_search = True
+                web_context = "\n\n".join(
+                    [f"Source: {r.get('title', 'Unknown')}\n{r.get('snippet', '')}" for r in web_search_results[:3]]
+                )
+                prompt = (
+                    f"{language_instruction}\n\nUse these web results to answer:\n{web_context}\n\n"
+                    f"Conversation:\n{conversation_context}\n\nQuestion: {message_data.message}"
+                )
+        except Exception as e:
+            logger.warning(f"Web search failed in stream: {e}")
+
+    def event_generator():
+        full_answer = []
+        try:
+            for token in rag_manager.generate_from_context(
+                prompt, context_texts if not used_web_search else [], stream=True
+            ):
+                full_answer.append(token)
+                yield f"data: {_json.dumps({'token': token})}\n\n"
+        except Exception as e:
+            msg = rag_manager._friendly_openai_error(e)
+            full_answer = [msg]
+            yield f"data: {_json.dumps({'token': msg})}\n\n"
+
+        answer_text = "".join(full_answer)
+        context_data = {
+            "context": context_texts,
+            "indexing_info": {"files_indexed": 0, "message": "Using pre-indexed documents only"},
+            "conversation_context": conversation_context,
+            "used_web_search": used_web_search,
+            "web_search_results": web_search_results[:3] if web_search_results else None,
+        }
+        try:
+            save_db = SessionLocal()
+            try:
+                db_message = ChatMessage(
+                    user_id=current_user.id,
+                    message=message_data.message,
+                    response=answer_text,
+                    context=context_data,
+                )
+                save_db.add(db_message)
+                save_db.commit()
+                save_db.refresh(db_message)
+                yield f"data: {_json.dumps({'done': True, 'id': db_message.id, 'created_at': db_message.created_at.isoformat(), 'context': context_data})}\n\n"
+            finally:
+                save_db.close()
+        except Exception as e:
+            logger.error(f"Failed saving streamed chat: {e}")
+            yield f"data: {_json.dumps({'done': True, 'id': None, 'context': context_data})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 # نقاط نهاية رفع الملفات (محمية)
 @app.post("/upload-file", response_model=FileUploadResponse)
 async def upload_file(
@@ -827,32 +902,51 @@ async def upload_file(
         db.commit()
         db.refresh(db_file)
 
-        # --- Begin: Index for users in target roles (filtered by specialization for students) ---
+        # --- Begin: Index at upload time (chat will never index) ---
         global rag_manager
         if rag_manager is None:
             raise HTTPException(status_code=503, detail="RAG manager is not ready")
         file_paths = [file_path]
         print(f"📤 Uploading file for roles: {target_roles}, specialization: {specialization}")
+        indexed_user_ids = set()
+        documents = rag_manager.load_documents(file_paths=file_paths)
+        if not documents:
+            raise HTTPException(status_code=400, detail="Could not read document content for indexing")
+
+        # Always index for the uploader (faculty)
+        try:
+            rag_manager.index_documents(documents, current_user.id, file_paths)
+            indexed_user_ids.add(current_user.id)
+            print(f"✅ Indexed for uploader {current_user.id}")
+        except Exception as e:
+            print(f"⚠️ Indexing failed for uploader: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Upload saved but indexing failed: {rag_manager._friendly_openai_error(e)}",
+            )
+
         for role in target_roles:
             if role == "student" and specialization:
-                # Filter students by specialization
                 users = db.query(User).filter(
                     User.role == role,
-                    User.specialization == specialization
+                    User.specialization == specialization,
                 ).all()
                 print(f"👥 Found {len(users)} students with specialization '{specialization}'")
             else:
-                # For faculty or all students (if no specialization specified)
                 users = db.query(User).filter(User.role == role).all()
                 print(f"👥 Found {len(users)} users with role '{role}'")
             for user in users:
-                print(f"📚 Indexing document for user {user.id} ({user.username})")
-                # Load and index the document for each user
-                documents = rag_manager.load_documents(file_paths=file_paths)
-                print(f"📄 Loaded {len(documents)} documents")
-                rag_manager.index_documents(documents, user.id, file_paths)
-                print(f"✅ Indexed documents for user {user.id}")
-        # --- End: Index for users in target roles ---
+                if user.id in indexed_user_ids:
+                    continue
+                try:
+                    print(f"📚 Indexing document for user {user.id} ({user.username})")
+                    rag_manager.index_documents(documents, user.id, file_paths)
+                    indexed_user_ids.add(user.id)
+                    print(f"✅ Indexed documents for user {user.id}")
+                except Exception as e:
+                    # Soft-fail per user so one failure does not break the whole upload
+                    print(f"⚠️ Indexing failed for user {user.id}: {e}")
+        # --- End: Index at upload time ---
 
         return FileUploadResponse.from_orm(db_file)
     except Exception as e:
