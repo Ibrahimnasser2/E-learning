@@ -1,5 +1,6 @@
 # استيراد المكتبات المطلوبة لنظام RAG
 import os
+import re
 import hashlib
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -287,7 +288,7 @@ class RAGManagerPGVector:
         """
         try:
             clean_query = (query or "").replace('"', "").replace("'", "").strip()
-            print(f"🔍 RAG Query: user_id={user_id}, query='{clean_query[:80]}...', top_k={top_k}")
+            print(f"🔍 RAG Query: user_id={user_id}, query='{clean_query[:120]}...', top_k={top_k}")
             print(f"📚 Collection: {user_collection_name(user_id)}")
             pgvector_store = self._get_pgvector_store(user_id)
 
@@ -318,6 +319,29 @@ class RAGManagerPGVector:
         except Exception as e:
             print(f"⚠️ Error querying documents for user {user_id}: {e}")
             return []
+
+    def query_with_variants(self, queries, user_id, top_k=8):
+        """Run several retrieval queries and merge unique chunks (order preserved)."""
+        seen = set()
+        merged = []
+        variants = []
+        for q in queries or []:
+            q = (q or "").strip()
+            if q and q not in variants:
+                variants.append(q)
+        if not variants:
+            return []
+        per_query_k = max(top_k, 6)
+        for q in variants[:4]:
+            for chunk in self.query(q, user_id, top_k=per_query_k) or []:
+                if chunk not in seen:
+                    seen.add(chunk)
+                    merged.append(chunk)
+                if len(merged) >= top_k * 2:
+                    break
+            if len(merged) >= top_k * 2:
+                break
+        return merged[: max(top_k, 10)]
 
     def _vector_sql_fallback(self, query, user_id, top_k=5):
         """Raw pgvector cosine distance when LangChain search returns nothing."""
@@ -364,7 +388,8 @@ class RAGManagerPGVector:
         """If vector search returns nothing, try simple keyword match in stored docs."""
         try:
             import psycopg2
-            terms = [t for t in query.split() if len(t) > 2][:8]
+            # Keep short tokens (e.g. MSN, AI) — they often appear on resumes
+            terms = [t for t in re.findall(r"[A-Za-z0-9\u0600-\u06FF]+", query or "") if len(t) >= 2][:10]
             if not terms:
                 return []
             collection_name = user_collection_name(user_id)
@@ -421,16 +446,19 @@ class RAGManagerPGVector:
             return
 
         system_prompt = (
-            "You are a course assistant. Answer ONLY using the document context below. "
-            "If the answer is in the context, quote or paraphrase it clearly. "
-            "Do not say you lack access to slides if the context contains them. "
-            "If the context truly does not contain the answer, say what is missing."
+            "You are a document assistant. Answer using the DOCUMENT CONTEXT below. "
+            "Use the conversation history to understand follow-ups like 'tell me more', "
+            "'give me more skills', or 'what about X'. "
+            "When asked for more detail, extract ALL related facts from the context — "
+            "do not only repeat what was already said if more appears in the documents. "
+            "If a short name/acronym (e.g. MSN) appears in the context, explain it from that context. "
+            "Only say information is missing when it truly is not in the context."
         )
         context = "\n\n---\n\n".join(context_texts)
         user_content = (
             f"DOCUMENT CONTEXT:\n{context}\n\n"
-            f"USER QUESTION:\n{question}\n\n"
-            "Answer using the document context."
+            f"USER QUESTION / CONVERSATION:\n{question}\n\n"
+            "Answer thoroughly using the document context. For follow-ups, add new details from the context."
         )
 
         messages = [

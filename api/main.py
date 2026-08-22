@@ -436,6 +436,73 @@ async def get_chat_history(current_user: User = Depends(get_current_user), db: S
     messages = db.query(ChatMessage).filter(ChatMessage.user_id == current_user.id).order_by(ChatMessage.created_at).all()
     return ChatHistoryResponse(messages=[ChatMessageResponse.from_orm(msg) for msg in messages])
 
+FOLLOW_UP_MARKERS = (
+    "tell me more",
+    "more detail",
+    "more details",
+    "give me more",
+    "what about",
+    "what a bout",
+    "and more",
+    "continue",
+    "elaborate",
+    "in more detail",
+    "المزيد",
+    "تفاصيل",
+    "أكثر",
+)
+
+SECTION_QUERY_HINTS = (
+    ("compan", "companies employers organizations work experience"),
+    ("experience", "experience work employment internship job company role"),
+    ("skill", "skills competencies soft skills technical skills tools technologies"),
+    ("project", "projects portfolio built developed"),
+    ("educat", "education university degree school"),
+    ("msn", "MSN"),
+)
+
+
+def build_retrieval_queries(message: str, prior_user_messages: list) -> list:
+    """
+    Expand short/follow-up questions with prior turns so vector search
+    stays on the same person/topic (e.g. 'tell me more' -> Ibrahim experience).
+    """
+    msg = (message or "").strip()
+    priors = [p.strip() for p in (prior_user_messages or []) if p and p.strip()]
+    lower = msg.lower()
+    is_follow_up = len(msg.split()) <= 7 or any(m in lower for m in FOLLOW_UP_MARKERS)
+
+    queries = []
+    if msg:
+        queries.append(msg)
+
+    if priors:
+        topic_blob = " ".join(priors[-3:])
+        if is_follow_up:
+            queries.insert(0, f"{topic_blob} {msg}".strip())
+            queries.append(topic_blob)
+        else:
+            # Still bias toward the ongoing subject (e.g. Ibrahim)
+            queries.append(f"{msg} {priors[-1]}".strip())
+
+    # Resume-section synonyms help when wording differs from the PDF
+    for needle, hint in SECTION_QUERY_HINTS:
+        if needle in lower or any(needle in (p or "").lower() for p in priors[-2:]):
+            subject = priors[-1] if priors else msg
+            queries.append(f"{subject} {hint}".strip())
+            break
+
+    # unique preserve order
+    seen = set()
+    out = []
+    for q in queries:
+        key = q.lower()
+        if q and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out[:4]
+
+
 def detect_language(text: str) -> str:
     """
     Detect the language of the input text
@@ -558,7 +625,7 @@ async def send_message(
     if not rag_manager:
         raise HTTPException(status_code=500, detail="RAG Manager not initialized")
     try:
-        top_k = message_data.top_k or 3
+        top_k = message_data.top_k or 8
         
         # Get recent chat history for context
         recent_messages = db.query(ChatMessage).filter(
@@ -567,9 +634,11 @@ async def send_message(
         
         # Build context from recent messages
         context_messages = []
+        prior_user_questions = []
         for msg in reversed(recent_messages):  # Reverse to get chronological order
             context_messages.append(f"User: {msg.message}")
             context_messages.append(f"Assistant: {msg.response}")
+            prior_user_questions.append(msg.message)
         
         # Add current message
         context_messages.append(f"User: {message_data.message}")
@@ -606,12 +675,14 @@ async def send_message(
         context_texts = []
         indexing_info = {"files_indexed": 0, "message": "Using pre-indexed documents only"}
         try:
-            print(f"🔍 Searching indexed docs for user {current_user.id}: {message_data.message[:100]}...")
-            context_texts = rag_manager.query_multi_store(
-                message_data.message,
+            retrieval_queries = build_retrieval_queries(
+                message_data.message, prior_user_questions
+            )
+            print(f"🔍 Searching indexed docs for user {current_user.id}: {retrieval_queries}")
+            context_texts = rag_manager.query_with_variants(
+                retrieval_queries,
                 current_user.id,
-                roles=[current_user.role] if current_user.role else None,
-                top_k=top_k or 6,
+                top_k=top_k or 8,
             ) or []
             indexing_info["documents_found"] = len(context_texts)
             print(f"📄 Found {len(context_texts)} documents")
@@ -636,7 +707,7 @@ async def send_message(
         internal_answer = rag_manager.generate_answer(
             question_for_llm,
             current_user.id,
-            top_k=top_k or 6,
+            top_k=top_k or 8,
             context_texts=context_texts,
         )
 
@@ -763,25 +834,28 @@ async def send_message_stream(
 
     import json as _json
 
-    top_k = message_data.top_k or 6
+    top_k = message_data.top_k or 8
     recent_messages = db.query(ChatMessage).filter(
         ChatMessage.user_id == current_user.id
     ).order_by(ChatMessage.created_at.desc()).limit(5).all()
 
     context_messages = []
+    prior_user_questions = []
     for msg in reversed(recent_messages):
         context_messages.append(f"User: {msg.message}")
         context_messages.append(f"Assistant: {msg.response}")
+        prior_user_questions.append(msg.message)
     conversation_context = "\n".join(context_messages)
 
     context_texts = []
     try:
-        # Prefer the raw user question for retrieval (not the whole chat history)
-        roles = [current_user.role] if getattr(current_user, "role", None) else None
-        context_texts = rag_manager.query_multi_store(
-            message_data.message,
+        retrieval_queries = build_retrieval_queries(
+            message_data.message, prior_user_questions
+        )
+        logger.info(f"Stream retrieval queries: {retrieval_queries}")
+        context_texts = rag_manager.query_with_variants(
+            retrieval_queries,
             current_user.id,
-            roles=roles,
             top_k=top_k,
         ) or []
         logger.info(
