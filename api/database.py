@@ -6,14 +6,24 @@ import os
 from dotenv import load_dotenv
 from enum import Enum as PyEnum
 from sqlalchemy.dialects.postgresql import JSONB
+from pathlib import Path
 
-load_dotenv()
+# Load api/.env regardless of the process working directory
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("PGVECTOR_CONNECTION_STRING")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL or PGVECTOR_CONNECTION_STRING must be set")
 
-engine = create_engine(DATABASE_URL)
+# Neon (and other serverless Postgres) closes idle SSL connections.
+# pool_pre_ping detects dead sockets; pool_recycle replaces them before timeout.
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=280,
+    pool_size=5,
+    max_overflow=10,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
