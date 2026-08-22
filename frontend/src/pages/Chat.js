@@ -36,7 +36,6 @@ const Chat = () => {
     temperature: 0.7,
     maxOutput: 'medium',
     topK: 3,
-    showContext: true,
     autoScroll: true
   });
   const [theme, setTheme] = useState('light');
@@ -492,41 +491,6 @@ const Chat = () => {
                                 <span className="stream-cursor">▍</span>
                               ) : null}
                             </div>
-                          )}
-                          {message.context && settings.showContext && !message.loading && (
-                            <details className="context-details">
-                              <summary>
-                                <BookOpen size={14} style={{ marginRight: '4px' }} /> View Sources
-                                {message.context.used_web_search && (
-                                  <span style={{ marginLeft: '8px', color: '#4caf50', fontWeight: 'bold' }}>
-                                    <Globe size={14} style={{ marginRight: '4px' }} /> Web Search Used
-                                  </span>
-                                )}
-                              </summary>
-                              <div className="context-list">
-                                {message.context.context && message.context.context.map((ctx, i) => (
-                                  <div key={i} className="context-item">
-                                    <p>{ctx}</p>
-                                  </div>
-                                ))}
-                                {message.context.web_search_results && message.context.web_search_results.length > 0 && (
-                                  <div className="context-item" style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #ddd' }}>
-                                    <strong style={{ color: '#4caf50', display: 'flex', alignItems: 'center', gap: '4px' }}><Globe size={14} /> Web Search Results:</strong>
-                                    {message.context.web_search_results.map((result, i) => (
-                                      <div key={i} style={{ marginTop: '8px', padding: '8px', background: '#f5f5f5', borderRadius: '4px' }}>
-                                        <strong>{result.title}</strong>
-                                        <p style={{ margin: '4px 0', fontSize: '0.9em', color: '#666' }}>{result.snippet}</p>
-                                        {result.url && (
-                                          <a href={result.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.85em', color: '#2196f3' }}>
-                                            View Source →
-                                          </a>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </details>
                           )}
                           <div className="message-time">{formatDate(message.created_at)}</div>
                         </div>

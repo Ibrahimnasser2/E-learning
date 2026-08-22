@@ -52,8 +52,11 @@ class RAGManagerPGVector:
 
     def ensure_embedding_schema(self):
         """
-        Drop/recreate vector tables if they were created with a different embedding size
+        Drop/recreate vector tables only when stored vectors are the wrong size
         (e.g. FastEmbed 384-d vs OpenAI 1536-d).
+
+        LangChain often creates the column as unbounded `vector` (not vector(1536)).
+        That is OK — do NOT wipe on that alone, or every restart deletes the index.
         """
         try:
             import psycopg2
@@ -80,16 +83,48 @@ class RAGManagerPGVector:
                       AND a.attname = 'embedding'
                       AND a.attnum > 0
                       AND NOT a.attisdropped
+                      AND n.nspname = current_schema()
                 """)
                 row = cursor.fetchone()
                 type_name = (row[0] if row else "") or ""
-                # e.g. vector(384) or vector(1536)
-                if f"vector({OPENAI_EMBEDDING_DIMS})" not in type_name:
+
+                # Prefer actual stored vector length over column declaration.
+                stored_dims = None
+                try:
+                    cursor.execute(
+                        """
+                        SELECT vector_dims(embedding)
+                        FROM langchain_pg_embedding
+                        WHERE embedding IS NOT NULL
+                        LIMIT 1
+                        """
+                    )
+                    dim_row = cursor.fetchone()
+                    if dim_row and dim_row[0] is not None:
+                        stored_dims = int(dim_row[0])
+                except Exception as e:
+                    print(f"⚠️ Could not read vector_dims: {e}")
+
+                if stored_dims is not None and stored_dims != OPENAI_EMBEDDING_DIMS:
                     print(
-                        f"⚠️ Embedding column type is '{type_name}', "
-                        f"expected vector({OPENAI_EMBEDDING_DIMS}). Resetting vector tables."
+                        f"⚠️ Stored embeddings are {stored_dims}-d, "
+                        f"expected {OPENAI_EMBEDDING_DIMS}. Resetting vector tables."
                     )
                     needs_reset = True
+                elif stored_dims is None and type_name.startswith("vector("):
+                    # Declared fixed size that is not OpenAI's size, and no rows yet
+                    if f"vector({OPENAI_EMBEDDING_DIMS})" not in type_name:
+                        print(
+                            f"⚠️ Embedding column type is '{type_name}', "
+                            f"expected vector({OPENAI_EMBEDDING_DIMS}). Resetting vector tables."
+                        )
+                        needs_reset = True
+                else:
+                    # Unbounded `vector` or matching dims — keep existing data
+                    print(
+                        f"ℹ️ Embedding schema OK "
+                        f"(column={type_name!r}, stored_dims={stored_dims})"
+                    )
 
             if needs_reset:
                 cursor.execute("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE")
@@ -246,43 +281,121 @@ class RAGManagerPGVector:
             }
         return {"files_indexed": 0, "message": "No documents could be loaded from files"}
 
-    def query(self, query, user_id, top_k=3):
+    def query(self, query, user_id, top_k=5):
+        """
+        البحث في الوثائق المفهرسة
+        """
         try:
-            print(f"🔍 RAG Query: user_id={user_id}, query='{query[:50]}...', top_k={top_k}")
+            clean_query = (query or "").replace('"', "").replace("'", "").strip()
+            print(f"🔍 RAG Query: user_id={user_id}, query='{clean_query[:80]}...', top_k={top_k}")
+            print(f"📚 Collection: {user_collection_name(user_id)}")
             pgvector_store = self._get_pgvector_store(user_id)
-            results = pgvector_store.similarity_search(query, k=top_k)
+
+            results = []
+            try:
+                # Do NOT filter by score — PGVector "relevance" can be distance or
+                # a tiny cosine-derived value; filtering often dropped all hits.
+                scored = pgvector_store.similarity_search_with_relevance_scores(clean_query, k=top_k)
+                for doc, score in scored:
+                    try:
+                        print(f"   ↪ score={float(score):.4f} preview={doc.page_content[:80]!r}")
+                    except Exception:
+                        print(f"   ↪ score={score} preview={doc.page_content[:80]!r}")
+                    if doc and doc.page_content:
+                        results.append(doc.page_content)
+            except Exception as e:
+                print(f"⚠️ scored search failed, falling back: {e}")
+                docs = pgvector_store.similarity_search(clean_query, k=top_k)
+                results = [d.page_content for d in docs if d and d.page_content]
+
+            if not results:
+                results = self._vector_sql_fallback(clean_query, user_id, top_k=top_k)
+            if not results:
+                results = self._keyword_fallback(clean_query, user_id, top_k=top_k)
+
             print(f"📊 RAG Query results: {len(results)} documents found")
-            return [result.page_content for result in results]
+            return results
         except Exception as e:
             print(f"⚠️ Error querying documents for user {user_id}: {e}")
             return []
 
-    def query_multi_store(self, query, user_id, roles=None, top_k=3):
-        results = []
+    def _vector_sql_fallback(self, query, user_id, top_k=5):
+        """Raw pgvector cosine distance when LangChain search returns nothing."""
         try:
-            pgvector_store = self._get_pgvector_store(user_id)
-            personal_results = pgvector_store.similarity_search(query, k=top_k)
-            results.extend(personal_results)
+            import psycopg2
+            collection_name = user_collection_name(user_id)
+            embedding = self.embedding_model.embed_query(query)
+            vector_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+            conn = psycopg2.connect(self.connection_string)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT e.document
+                FROM langchain_pg_embedding e
+                JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+                WHERE c.name = %s
+                ORDER BY e.embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (collection_name, vector_literal, top_k),
+            )
+            rows = [r[0] for r in cursor.fetchall() if r and r[0]]
+            if rows:
+                print(f"🧮 SQL vector fallback found {len(rows)} docs for user {user_id}")
+            else:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM langchain_pg_embedding e
+                    JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+                    WHERE c.name = %s
+                    """,
+                    (collection_name,),
+                )
+                n = cursor.fetchone()[0]
+                print(f"🧮 SQL vector fallback: 0 docs (collection has {n} chunks)")
+            conn.close()
+            return rows
         except Exception as e:
-            print(f"⚠️ Error querying personal store for user {user_id}: {e}")
-        if roles:
-            for role in roles:
-                try:
-                    group_store = self._get_pgvector_store(role)
-                    group_results = group_store.similarity_search(query, k=top_k)
-                    results.extend(group_results)
-                except Exception as e:
-                    print(f"⚠️ Error querying group store for role {role}: {e}")
-        seen = set()
-        unique_results = []
-        for r in results:
-            content = getattr(r, 'page_content', str(r))
-            if content not in seen:
-                seen.add(content)
-                unique_results.append(r)
-        if unique_results and hasattr(unique_results[0], 'score'):
-            unique_results.sort(key=lambda x: -x.score)
-        return unique_results[:top_k]
+            print(f"⚠️ SQL vector fallback failed: {e}")
+            return []
+
+    def _keyword_fallback(self, query, user_id, top_k=5):
+        """If vector search returns nothing, try simple keyword match in stored docs."""
+        try:
+            import psycopg2
+            terms = [t for t in query.split() if len(t) > 2][:8]
+            if not terms:
+                return []
+            collection_name = user_collection_name(user_id)
+            conn = psycopg2.connect(self.connection_string)
+            cursor = conn.cursor()
+            like_clauses = " OR ".join(["e.document ILIKE %s" for _ in terms])
+            params = [collection_name] + [f"%{t}%" for t in terms]
+            cursor.execute(
+                f"""
+                SELECT e.document
+                FROM langchain_pg_embedding e
+                JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+                WHERE c.name = %s AND ({like_clauses})
+                LIMIT %s
+                """,
+                params + [top_k],
+            )
+            rows = [r[0] for r in cursor.fetchall() if r and r[0]]
+            conn.close()
+            if rows:
+                print(f"🔎 Keyword fallback found {len(rows)} docs for user {user_id}")
+            return rows
+        except Exception as e:
+            print(f"⚠️ Keyword fallback failed: {e}")
+            return []
+
+    def query_multi_store(self, query, user_id, roles=None, top_k=5):
+        # Documents are indexed per user id at upload time — search that store only.
+        # (Role-named collections are not used for indexing.)
+        _ = roles
+        return self.query(query, user_id, top_k=top_k)
 
     @staticmethod
     def _friendly_openai_error(exc):
@@ -298,16 +411,27 @@ class RAGManagerPGVector:
 
     def generate_from_context(self, question, context_texts, model="gpt-3.5-turbo", stream=False):
         """Generate from prefetched context. Yields text chunks (one chunk if not streaming)."""
+        if not context_texts:
+            msg = (
+                "I could not find relevant content in your indexed documents for this question. "
+                "Make sure the PDF was uploaded and indexed for your account, then try asking "
+                "with words that appear in the slides (for example a slide title)."
+            )
+            yield msg
+            return
+
         system_prompt = (
-            "You are a helpful AI assistant that answers questions based on the provided "
-            "context and conversation history. Be conversational and helpful. "
-            "If you don't have enough information, say so clearly."
+            "You are a course assistant. Answer ONLY using the document context below. "
+            "If the answer is in the context, quote or paraphrase it clearly. "
+            "Do not say you lack access to slides if the context contains them. "
+            "If the context truly does not contain the answer, say what is missing."
         )
-        if context_texts:
-            context = "\n".join(context_texts)
-            user_content = f"Context from documents: {context}\n\nConversation: {question}"
-        else:
-            user_content = question
+        context = "\n\n---\n\n".join(context_texts)
+        user_content = (
+            f"DOCUMENT CONTEXT:\n{context}\n\n"
+            f"USER QUESTION:\n{question}\n\n"
+            "Answer using the document context."
+        )
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -319,8 +443,8 @@ class RAGManagerPGVector:
                 stream_resp = self.client.chat.completions.create(
                     model=model,
                     messages=messages,
-                    temperature=0.2,
-                    max_tokens=512,
+                    temperature=0.1,
+                    max_tokens=700,
                     stream=True,
                 )
                 for chunk in stream_resp:
@@ -332,8 +456,8 @@ class RAGManagerPGVector:
             response = self.client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0.2,
-                max_tokens=512,
+                temperature=0.1,
+                max_tokens=700,
             )
             yield response.choices[0].message.content
         except Exception as e:
@@ -343,11 +467,9 @@ class RAGManagerPGVector:
     def generate_answer(self, question, user_id, top_k=3, model="gpt-3.5-turbo", roles=None, context_texts=None):
         try:
             if context_texts is None:
-                if roles:
-                    retrieved_docs = self.query_multi_store(question, user_id, roles=roles, top_k=top_k)
-                    context_texts = [doc.page_content for doc in retrieved_docs] if retrieved_docs else []
-                else:
-                    context_texts = self.query(question, user_id, top_k=top_k)
+                context_texts = self.query_multi_store(
+                    question, user_id, roles=roles, top_k=top_k
+                ) or []
 
             if not context_texts:
                 return (

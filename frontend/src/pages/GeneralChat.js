@@ -9,8 +9,7 @@ import {
   Globe,
   Loader,
   Hand,
-  Menu,
-  BookOpen
+  Menu
 } from 'lucide-react';
 
 const GeneralChat = () => {
@@ -22,7 +21,6 @@ const GeneralChat = () => {
     temperature: 0.7,
     maxOutput: 'medium',
     topK: 3,
-    showContext: false,
     autoScroll: true
   });
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -187,27 +185,6 @@ const GeneralChat = () => {
                         ) : (
                           <div className="message-text">{message.response}</div>
                         )}
-                        {/* Show context sources if available and showContext is enabled */}
-                        {message.context && settings.showContext && !message.loading && (
-                          (() => { console.log('message.context:', message.context); console.log('message.context.context:', message.context && message.context.context); return null; })(),
-                          <details className="context-details">
-                            <summary><BookOpen size={14} style={{ marginRight: '4px' }} /> View Sources</summary>
-                            <div className="context-list">
-                              {Array.isArray(message.context.context) && message.context.context.map((ctx, i) => (
-                                <div key={i} className="context-item">
-                                  {typeof ctx === 'object' && ctx !== null ? (
-                                    <p>
-                                      <strong>File:</strong> {ctx.file_name || 'Unknown'}<br />
-                                      <span>{ctx.text || ''}</span>
-                                    </p>
-                                  ) : (
-                                    <p>{ctx}</p>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        )}
                         <div className="message-time">{formatDate(message.created_at)}</div>
                       </div>
                     </div>
@@ -311,16 +288,6 @@ const GeneralChat = () => {
                 onChange={(e) => setSettings(prev => ({ ...prev, topK: parseInt(e.target.value) }))}
                 className="setting-slider"
               />
-            </div>
-            <div className="setting-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.showContext}
-                  onChange={(e) => setSettings(prev => ({ ...prev, showContext: e.target.checked }))}
-                />
-                Show Context
-              </label>
             </div>
             <div className="setting-group">
               <label>

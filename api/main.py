@@ -603,12 +603,16 @@ async def send_message(
         file_paths = [os.path.join(UPLOADS_DIR, str(f.filename)) for f in allowed_files if f.filename is not None]
 
         # Chat never indexes — indexing happens only at upload time.
-        # Search the already-indexed vectors for this user.
         context_texts = []
         indexing_info = {"files_indexed": 0, "message": "Using pre-indexed documents only"}
         try:
             print(f"🔍 Searching indexed docs for user {current_user.id}: {message_data.message[:100]}...")
-            context_texts = rag_manager.query(message_data.message, current_user.id, top_k=top_k) or []
+            context_texts = rag_manager.query_multi_store(
+                message_data.message,
+                current_user.id,
+                roles=[current_user.role] if current_user.role else None,
+                top_k=top_k or 6,
+            ) or []
             indexing_info["documents_found"] = len(context_texts)
             print(f"📄 Found {len(context_texts)} documents")
         except Exception as e:
@@ -616,31 +620,25 @@ async def send_message(
             context_texts = []
             indexing_info = {"files_indexed": 0, "message": f"Error querying documents: {str(e)}"}
         
-        # Detect language of the question
         detected_language = detect_language(message_data.message)
         language_instruction = get_language_instruction(detected_language)
         logger.info(f"🌐 Detected language: {detected_language} for question: {message_data.message[:50]}...")
         
-        # توليد الإجابة باستخدام السياق المسترجع والمحادثة السابقة
         internal_answer = None
         web_search_results = None
         used_web_search = False
-        
-        if context_texts:
-            # Use the retrieved document context along with conversation context
-            document_context = "\n\n".join(context_texts)
-            full_context = f"{language_instruction}\n\nDocument Context:\n{document_context}\n\nConversation:\n{conversation_context}"
-            internal_answer = rag_manager.generate_answer(
-                full_context,
-                current_user.id,
-                top_k=top_k,
-                context_texts=context_texts,
-            )
-        else:
-            # No docs: answer from conversation only (no second vector search)
-            full_context = f"{language_instruction}\n\nConversation:\n{conversation_context}"
-            parts = list(rag_manager.generate_from_context(full_context, [], stream=False))
-            internal_answer = parts[0] if parts else "No indexed documents found for your account yet."
+
+        question_for_llm = (
+            f"{language_instruction}\n\n"
+            f"Recent conversation:\n{conversation_context}\n\n"
+            f"Current question: {message_data.message}"
+        )
+        internal_answer = rag_manager.generate_answer(
+            question_for_llm,
+            current_user.id,
+            top_k=top_k or 6,
+            context_texts=context_texts,
+        )
 
         # Agentic AI: If web search is enabled, ALWAYS perform web search and prioritize results
         if message_data.enable_web_search:
@@ -765,7 +763,7 @@ async def send_message_stream(
 
     import json as _json
 
-    top_k = message_data.top_k or 3
+    top_k = message_data.top_k or 6
     recent_messages = db.query(ChatMessage).filter(
         ChatMessage.user_id == current_user.id
     ).order_by(ChatMessage.created_at.desc()).limit(5).all()
@@ -774,12 +772,22 @@ async def send_message_stream(
     for msg in reversed(recent_messages):
         context_messages.append(f"User: {msg.message}")
         context_messages.append(f"Assistant: {msg.response}")
-    context_messages.append(f"User: {message_data.message}")
     conversation_context = "\n".join(context_messages)
 
     context_texts = []
     try:
-        context_texts = rag_manager.query(message_data.message, current_user.id, top_k=top_k) or []
+        # Prefer the raw user question for retrieval (not the whole chat history)
+        roles = [current_user.role] if getattr(current_user, "role", None) else None
+        context_texts = rag_manager.query_multi_store(
+            message_data.message,
+            current_user.id,
+            roles=roles,
+            top_k=top_k,
+        ) or []
+        logger.info(
+            f"Stream RAG user={current_user.id} role={current_user.role} "
+            f"hits={len(context_texts)} q={message_data.message[:80]!r}"
+        )
     except Exception as e:
         logger.warning(f"Stream query failed: {e}")
         context_texts = []
@@ -787,11 +795,16 @@ async def send_message_stream(
     detected_language = detect_language(message_data.message)
     language_instruction = get_language_instruction(detected_language)
 
-    if context_texts:
-        document_context = "\n\n".join(context_texts)
-        prompt = f"{language_instruction}\n\nDocument Context:\n{document_context}\n\nConversation:\n{conversation_context}"
+    # Keep the question clean; document context is injected inside generate_from_context
+    question_for_llm = message_data.message
+    if conversation_context:
+        question_for_llm = (
+            f"{language_instruction}\n\n"
+            f"Recent conversation:\n{conversation_context}\n\n"
+            f"Current question: {message_data.message}"
+        )
     else:
-        prompt = f"{language_instruction}\n\nConversation:\n{conversation_context}"
+        question_for_llm = f"{language_instruction}\n\n{message_data.message}"
 
     # Optional web search (non-stream gather, then stream the final answer)
     used_web_search = False
@@ -804,9 +817,11 @@ async def send_message_stream(
                 web_context = "\n\n".join(
                     [f"Source: {r.get('title', 'Unknown')}\n{r.get('snippet', '')}" for r in web_search_results[:3]]
                 )
-                prompt = (
-                    f"{language_instruction}\n\nUse these web results to answer:\n{web_context}\n\n"
-                    f"Conversation:\n{conversation_context}\n\nQuestion: {message_data.message}"
+                # For web search, put results into context_texts so the model must use them
+                context_texts = [web_context] + (context_texts or [])
+                question_for_llm = (
+                    f"{language_instruction}\n\n"
+                    f"Question: {message_data.message}"
                 )
         except Exception as e:
             logger.warning(f"Web search failed in stream: {e}")
@@ -815,7 +830,9 @@ async def send_message_stream(
         full_answer = []
         try:
             for token in rag_manager.generate_from_context(
-                prompt, context_texts if not used_web_search else [], stream=True
+                question_for_llm,
+                context_texts,
+                stream=True,
             ):
                 full_answer.append(token)
                 yield f"data: {_json.dumps({'token': token})}\n\n"
