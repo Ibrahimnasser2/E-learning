@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, JSON, Enum as SqlEnum, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, relationship, deferred
 from sqlalchemy.sql import func
 import os
 from dotenv import load_dotenv
