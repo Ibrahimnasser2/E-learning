@@ -10,7 +10,7 @@ from fastembed import TextEmbedding
 
 # Groq (free) for chat — OpenAI-compatible API
 GROQ_BASE_URL_DEFAULT = "https://api.groq.com/openai/v1"
-DEFAULT_CHAT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_CHAT_MODEL = "llama-3.3-70b-versatile"
 
 
 def _clean_env(name):
