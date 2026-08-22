@@ -4,7 +4,7 @@ import hashlib
 import json
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores.pgvector import PGVector
 from openai import OpenAI
 
@@ -38,9 +38,12 @@ class RAGManagerPGVector:
         """
         تهيئة مدير RAG
         """
-        # نموذج التضمين الدلالي - تحويل النصوص إلى متجهات
-        self.embedding_model = embedding_model or HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY must be set")
+        # OpenAI embeddings (lightweight for free hosting; no local torch)
+        self.embedding_model = embedding_model or OpenAIEmbeddings(
+            model="text-embedding-3-small",
+            api_key=api_key,
         )
         # سلسلة الاتصال بقاعدة البيانات
         self.connection_string = os.getenv("PGVECTOR_CONNECTION_STRING") or os.getenv("DATABASE_URL")

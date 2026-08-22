@@ -20,34 +20,55 @@ from datetime import timedelta, datetime
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from sqlalchemy import or_, and_
+from pathlib import Path
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import re
 
-# استيراد الوحدات المحلية للمشروع
-from api.database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables
-from api.auth import (
-    get_password_hash, 
-    verify_password, 
-    create_access_token, 
-    get_current_user,
-    authenticate_user,
-    ACCESS_TOKEN_EXPIRE_MINUTES
-)
-from api.models import (
-    UserRegister, UserLogin, UserResponse, Token,
-    ChatMessageRequest, ChatMessageResponse, ChatHistoryResponse,
-    FileUploadResponse, FileListResponse,
-    ChatResponse, DocumentUploadResponse, IndexStats,
-    CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
-    CourseEnrollmentRequest, CourseEnrollmentResponse
-)
-from api.rag_manager_simple import RAGManagerPGVector
+# Load api/.env before importing modules that require env vars
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
-# تحميل متغيرات البيئة من ملف .env
-load_dotenv()
+# Local imports (works with Root Directory=api on Render, and with uvicorn api.main:app)
+try:
+    from database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables
+    from auth import (
+        get_password_hash,
+        verify_password,
+        create_access_token,
+        get_current_user,
+        authenticate_user,
+        ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
+    from models import (
+        UserRegister, UserLogin, UserResponse, Token,
+        ChatMessageRequest, ChatMessageResponse, ChatHistoryResponse,
+        FileUploadResponse, FileListResponse,
+        ChatResponse, DocumentUploadResponse, IndexStats,
+        CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
+        CourseEnrollmentRequest, CourseEnrollmentResponse,
+    )
+    from rag_manager_simple import RAGManagerPGVector
+except ImportError:
+    from api.database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables
+    from api.auth import (
+        get_password_hash,
+        verify_password,
+        create_access_token,
+        get_current_user,
+        authenticate_user,
+        ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
+    from api.models import (
+        UserRegister, UserLogin, UserResponse, Token,
+        ChatMessageRequest, ChatMessageResponse, ChatHistoryResponse,
+        FileUploadResponse, FileListResponse,
+        ChatResponse, DocumentUploadResponse, IndexStats,
+        CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
+        CourseEnrollmentRequest, CourseEnrollmentResponse,
+    )
+    from api.rag_manager_simple import RAGManagerPGVector
 
 # تهيئة مدير RAG كمتغير عام
 rag_manager = None
@@ -90,10 +111,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# تكوين CORS للسماح بالاتصال من تطبيق React
+# تكوين CORS للسماح بالاتصال من تطبيق React / frontend المنشور
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+allow_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # عنوان تطبيق React
+    allow_origins=allow_origins if allow_origins != ["*"] else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -804,8 +827,9 @@ async def upload_file(
         db.refresh(db_file)
 
         # --- Begin: Index for users in target roles (filtered by specialization for students) ---
-        from api.database import User
-        from api.rag_manager_simple import rag_manager
+        global rag_manager
+        if rag_manager is None:
+            raise HTTPException(status_code=503, detail="RAG manager is not ready")
         file_paths = [file_path]
         print(f"📤 Uploading file for roles: {target_roles}, specialization: {specialization}")
         for role in target_roles:
