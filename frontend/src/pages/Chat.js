@@ -183,10 +183,19 @@ const Chat = () => {
   };
 
   // معالجات رفع الملفات
+  const canUpload =
+    user?.role === 'faculty' &&
+    targetRoles.length > 0 &&
+    (!targetRoles.includes('student') || !!selectedSpecialization);
+
   const onDrop = async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
 
-    // Validate specialization if uploading for students
+    if (user.role === 'faculty' && targetRoles.length === 0) {
+      alert('Please select at least one target role (Faculty and/or Students) before uploading.');
+      return;
+    }
+
     if (user.role === 'faculty' && targetRoles.includes('student') && !selectedSpecialization) {
       alert('Please select a specialization when uploading for students');
       return;
@@ -232,7 +241,11 @@ const Chat = () => {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    multiple: true
+    multiple: true,
+    disabled: !canUpload || uploadingFile,
+    accept: {
+      'application/pdf': ['.pdf']
+    }
   });
 
   // رفع وثائق RAG
@@ -547,143 +560,143 @@ const Chat = () => {
             {/* Only show upload section for faculty */}
             {user.role === 'faculty' && (
               <div className="upload-section">
-                <h3>Upload Knowledge Documents (PDF only) ({mergedPDFs.length})</h3>
-                <div className="form-group" style={{ marginBottom: 16 }}>
-                  <label>Target Roles</label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', margin: '8px 0' }}>
-                    {roles.map(role => (
-                      <button
-                        type="button"
-                        key={role.value}
-                        className={`chunk-btn${targetRoles.includes(role.value) ? ' selected' : ''}`}
-                        style={{
-                          padding: '10px 18px',
-                          borderRadius: '18px',
-                          border: targetRoles.includes(role.value) ? '2px solid #2980b9' : '2px solid #bdc3c7',
-                          background: targetRoles.includes(role.value) ? '#2980b9' : '#f5f5f5',
-                          color: targetRoles.includes(role.value) ? '#fff' : '#222',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          outline: 'none',
-                          transition: 'all 0.2s',
-                        }}
-                        onClick={() => {
-                          const newRoles = targetRoles.includes(role.value)
-                            ? targetRoles.filter(r => r !== role.value)
-                            : [...targetRoles, role.value];
-                          setTargetRoles(newRoles);
-                          // Clear specialization if student role is removed
-                          if (!newRoles.includes('student')) {
-                            setSelectedSpecialization('');
-                          }
-                        }}
-                      >
-                        {role.label}
-                      </button>
-                    ))}
+                <h3>Upload Knowledge Documents</h3>
+                <p className="upload-subtitle">PDF files only · Choose audience first, then upload</p>
+
+                <div className="upload-steps">
+                  <div className={`upload-step ${targetRoles.length > 0 ? 'done' : 'current'}`}>
+                    <span className="step-num">1</span>
+                    <div className="step-body">
+                      <label className="step-label">Who can access this file? *</label>
+                      <div className="role-chips">
+                        {roles.map(role => {
+                          const selected = targetRoles.includes(role.value);
+                          return (
+                            <button
+                              type="button"
+                              key={role.value}
+                              className={`role-chip ${selected ? 'selected' : ''}`}
+                              onClick={() => {
+                                const newRoles = selected
+                                  ? targetRoles.filter(r => r !== role.value)
+                                  : [...targetRoles, role.value];
+                                setTargetRoles(newRoles);
+                                if (!newRoles.includes('student')) {
+                                  setSelectedSpecialization('');
+                                }
+                              }}
+                            >
+                              {role.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {targetRoles.length === 0 && (
+                        <small className="field-hint warn">Select Faculty and/or Students before uploading.</small>
+                      )}
+                    </div>
                   </div>
-                  <small style={{ color: '#888', marginTop: 4, display: 'block' }}>
-                    اختر فئة أو أكثر للملف (Select one or more target roles for the file)
-                  </small>
-                </div>
-                {targetRoles.includes('student') && (
-                  <div className="form-group" style={{ marginBottom: 16 }}>
-                    <label>Specialization (Required for Students) *</label>
-                    <select
-                      value={selectedSpecialization}
-                      onChange={(e) => setSelectedSpecialization(e.target.value)}
-                      style={{
-                        padding: '10px',
-                        borderRadius: '8px',
-                        border: '2px solid #bdc3c7',
-                        fontSize: '16px',
-                        width: '100%',
-                        marginTop: '8px'
-                      }}
-                      required
-                    >
-                      <option value="">Select Specialization</option>
-                      {specializations.map(spec => (
-                        <option key={spec} value={spec}>{spec}</option>
-                      ))}
-                    </select>
-                    <small style={{ color: '#888', marginTop: 4, display: 'block' }}>
-                      Select the specialization for students who should have access to this file
-                    </small>
-                  </div>
-                )}
-                <div {...getRootProps()} className={`dropzone ${isDragActive ? 'active' : ''}`} style={{ marginBottom: 16 }}>
-                  <input {...getInputProps()} disabled={uploadingFile} />
-                  {isDragActive ? (
-                    <p>Drop files here...</p>
-                  ) : (
-                    <p>{uploadingFile ? 'You can keep browsing — processing status is shown on each file below.' : 'Drag & drop files here, or click to select files'}</p>
+
+                  {targetRoles.includes('student') && (
+                    <div className={`upload-step ${selectedSpecialization ? 'done' : 'current'}`}>
+                      <span className="step-num">2</span>
+                      <div className="step-body">
+                        <label className="step-label">Student specialization *</label>
+                        <select
+                          className="spec-select"
+                          value={selectedSpecialization}
+                          onChange={(e) => setSelectedSpecialization(e.target.value)}
+                        >
+                          <option value="">Select specialization</option>
+                          {specializations.map(spec => (
+                            <option key={spec} value={spec}>{spec}</option>
+                          ))}
+                        </select>
+                        {!selectedSpecialization && (
+                          <small className="field-hint warn">Required when Students is selected.</small>
+                        )}
+                      </div>
+                    </div>
                   )}
+
+                  <div className={`upload-step ${canUpload ? 'current' : 'locked'}`}>
+                    <span className="step-num">{targetRoles.includes('student') ? '3' : '2'}</span>
+                    <div className="step-body">
+                      <label className="step-label">Upload PDF</label>
+                      <div
+                        {...getRootProps()}
+                        className={`dropzone ${isDragActive ? 'active' : ''} ${!canUpload || uploadingFile ? 'disabled' : ''}`}
+                      >
+                        <input {...getInputProps()} />
+                        <Upload size={28} className="dropzone-icon" />
+                        {!canUpload ? (
+                          <p>Complete the steps above to enable upload</p>
+                        ) : isDragActive ? (
+                          <p>Drop PDF here…</p>
+                        ) : uploadingFile ? (
+                          <p>Upload in progress — see status on each file below</p>
+                        ) : (
+                          <>
+                            <p>Drag & drop PDF here, or click to browse</p>
+                            <small>Ready to upload for: {targetRoles.join(', ')}</small>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
             <div className="files-list">
-              <h3>Uploaded Documents ({mergedPDFs.length})</h3>
+              <h3>Documents ({mergedPDFs.length})</h3>
               {mergedPDFs.length === 0 ? (
-                <p>No PDF files uploaded yet.</p>
+                <p className="empty-files">No PDF files uploaded yet.</p>
               ) : (
-                <div className="files-grid">
+                <div className="files-list-rows">
                   {mergedPDFs.map((file, idx) => {
                     const isProcessing = file.status === 'Uploading & indexing...';
                     const isFailed = file.status === 'Indexing failed' || file.status === 'Fail to upload';
+                    const isSuccess = file.status === 'Success' || (!file.status && file.id);
                     return (
-                    <div key={file.id || file.name + idx} className={`file-card ${isProcessing ? 'file-card-processing' : ''}`}>
-                      <div className="file-info">
-                        <div className="file-card-header">
-                          <strong>{file.name || file.original_filename}</strong>
-                          {isProcessing && (
-                            <span className="file-processing-badge">
-                              <Loader className="spin" size={18} />
-                              Processing…
-                            </span>
-                          )}
+                      <div
+                        key={file.id || file.name + idx}
+                        className={`file-row ${isProcessing ? 'is-processing' : ''} ${isFailed ? 'is-failed' : ''} ${isSuccess ? 'is-success' : ''}`}
+                      >
+                        <div className="file-row-icon">
+                          {isProcessing ? <Loader className="spin" size={22} /> : <FileText size={22} />}
                         </div>
-                        {file.file_size && <p>Size: {formatFileSize(file.file_size || 0)}</p>}
-                        {file.file_type && <p>Type: {file.file_type || 'Unknown'}</p>}
-                        {file.specialization && <p style={{ color: '#2980b9', fontWeight: 600 }}>Specialization: {file.specialization}</p>}
-                        {file.upload_time && <small>Uploaded: {formatDate(file.upload_time)}</small>}
-                        <div style={{ marginTop: 8, display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                          <span style={{
-                            color: file.status === 'Success' ? '#27ae60' : isFailed ? '#e74c3c' : '#f39c12',
-                            fontWeight: 600,
-                            fontSize: 13
-                          }}>{file.status || 'Success'}</span>
+                        <div className="file-row-main">
+                          <div className="file-row-title">{file.name || file.original_filename}</div>
+                          <div className="file-row-meta">
+                            {file.file_size ? <span>{formatFileSize(file.file_size)}</span> : null}
+                            {file.specialization ? <span>{file.specialization}</span> : null}
+                            {file.upload_time ? <span>{formatDate(file.upload_time)}</span> : null}
+                          </div>
+                          {isProcessing && (
+                            <div className="file-progress" aria-hidden="true">
+                              <div className="file-progress-bar" />
+                            </div>
+                          )}
+                          {file.error && <p className="file-error-text">{file.error}</p>}
+                        </div>
+                        <div className="file-row-actions">
+                          <span className={`status-pill ${isProcessing ? 'pending' : isFailed ? 'error' : 'ok'}`}>
+                            {isProcessing ? 'Indexing' : isFailed ? 'Failed' : 'Ready'}
+                          </span>
                           {file.id && !isProcessing && (
                             <button
+                              type="button"
+                              className="file-download-btn"
                               onClick={() => fileAPI.downloadFile(file.id)}
-                              style={{
-                                padding: '6px 12px',
-                                borderRadius: '6px',
-                                border: '1px solid #2980b9',
-                                background: '#2980b9',
-                                color: '#fff',
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                                fontWeight: 600
-                              }}
                               title="Download file"
                             >
                               <Download size={14} /> Download
                             </button>
                           )}
                         </div>
-                        {file.error && (
-                          <p className="file-error-text">{file.error}</p>
-                        )}
                       </div>
-                    </div>
                     );
                   })}
-                </div>
-              )}
-              {mergedPDFs.length > 0 && (
-                <div style={{ marginTop: 20, textAlign: 'center' }}>
-                  {/* Removed Index Available Files button and description */}
                 </div>
               )}
             </div>

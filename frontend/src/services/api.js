@@ -153,11 +153,12 @@ export const chatAPI = {
 export const fileAPI = {
   // Upload file to server (with target_roles and specialization)
   uploadFile: async (file, targetRoles = null, specialization = null) => {
+    if (!targetRoles || !Array.isArray(targetRoles) || targetRoles.length === 0) {
+      throw new Error('Please select at least one target role before uploading.');
+    }
     const formData = new FormData();
     formData.append('file', file);
-    if (targetRoles) {
-      formData.append('target_roles', JSON.stringify(targetRoles));
-    }
+    formData.append('target_roles', JSON.stringify(targetRoles));
     if (specialization) {
       formData.append('specialization', specialization);
     }
