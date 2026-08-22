@@ -3,18 +3,35 @@ import os
 import hashlib
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores.pgvector import PGVector
+from langchain_core.embeddings import Embeddings
 from openai import OpenAI
+from fastembed import TextEmbedding
 
-api_key = os.getenv('OPENAI_API_KEY')
+# Groq (free) for chat — OpenAI-compatible API
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+DEFAULT_CHAT_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+
+
+class FastEmbedLC(Embeddings):
+    """Lightweight free embeddings via fastembed (no torch)."""
+
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
+        self._model = TextEmbedding(model_name=model_name)
+
+    def embed_documents(self, texts):
+        return [list(vec) for vec in self._model.embed(texts)]
+
+    def embed_query(self, text):
+        return next(self._model.embed([text])).tolist()
 
 def user_collection_name(user_id):
     """
-    إنشاء اسم مجموعة فريدة لكل مستخدم
-    يضمن عزل بيانات كل مستخدم عن الآخرين
+    مجموعة فريدة لكل مستخدم.
+    البادئة fe = FastEmbed (أبعاد مختلفة عن OpenAI — لا تخلط الفهارس القديمة).
     """
-    return f"rag_collection_user_{user_id}"
+    return f"rag_fe_user_{user_id}"
 
 def get_file_hash(file_path):
     """
@@ -30,21 +47,24 @@ def get_file_hash(file_path):
 class RAGManagerPGVector:
     """
     مدير نظام RAG باستخدام PostgreSQL مع pgvector
-    يتعامل مع تحميل الوثائق وفهرستها والبحث فيها وتوليد الإجابات
+    Chat: Groq | Embeddings: FastEmbed (مجاني محلي خفيف)
     """
 
-    def __init__(self, embedding_model=None, api_key=api_key):
+    def __init__(self, embedding_model=None, api_key=None):
+        api_key = api_key or GROQ_API_KEY
         if not api_key:
-            raise ValueError("OPENAI_API_KEY must be set")
-        self.embedding_model = embedding_model or OpenAIEmbeddings(
-            model="text-embedding-3-small",
-            api_key=api_key,
+            raise ValueError("GROQ_API_KEY must be set")
+
+        # FastEmbed: free local embeddings, much lighter than torch/sentence-transformers
+        self.embedding_model = embedding_model or FastEmbedLC(
+            model_name=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
         )
         self.connection_string = os.getenv("PGVECTOR_CONNECTION_STRING") or os.getenv("DATABASE_URL")
         if not self.connection_string:
             raise ValueError("PGVECTOR_CONNECTION_STRING or DATABASE_URL must be set")
         self.api_key = api_key
-        self.client = OpenAI(api_key=api_key)
+        self.chat_model = DEFAULT_CHAT_MODEL
+        self.client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
 
     def _get_pgvector_store(self, user_id):
         collection_name = user_collection_name(user_id)
@@ -219,15 +239,18 @@ class RAGManagerPGVector:
         text = str(exc).lower()
         if "insufficient_quota" in text or "credit_balance_exhausted" in text or "no credits" in text:
             return (
-                "OpenAI API credits are exhausted. Please add billing credits, "
-                "then try again. Your documents remain indexed."
+                "AI API credits are exhausted. Please check your Groq/OpenAI billing, "
+                "then try again."
             )
         if "429" in text or "rate limit" in text or "too many requests" in text:
             return "The AI service is busy right now. Please wait a moment and try again."
+        if "invalid_api_key" in text or "authentication" in text or "401" in text:
+            return "AI API key is invalid. Please update GROQ_API_KEY on the server."
         return "Sorry, unable to generate an answer at this time. Please try again later."
 
-    def generate_from_context(self, question, context_texts, model="gpt-3.5-turbo", stream=False):
+    def generate_from_context(self, question, context_texts, model=None, stream=False):
         """Generate from prefetched context. Yields text chunks (one chunk if not streaming)."""
+        model = model or self.chat_model
         system_prompt = (
             "You are a helpful AI assistant that answers questions based on the provided "
             "context and conversation history. Be conversational and helpful. "
@@ -267,10 +290,11 @@ class RAGManagerPGVector:
             )
             yield response.choices[0].message.content
         except Exception as e:
-            print(f"❌ Error calling OpenAI API: {e}")
+            print(f"❌ Error calling chat API: {e}")
             yield self._friendly_openai_error(e)
 
-    def generate_answer(self, question, user_id, top_k=3, model="gpt-3.5-turbo", roles=None, context_texts=None):
+    def generate_answer(self, question, user_id, top_k=3, model=None, roles=None, context_texts=None):
+        model = model or self.chat_model
         try:
             if context_texts is None:
                 if roles:
@@ -329,7 +353,7 @@ class RAGManagerPGVector:
                 "vector_store_available": True,
                 "llm_available": True,
                 "database": "PostgreSQL with pgvector",
-                "llm": "OpenAI GPT-3.5-turbo",
+                "llm": "Groq Llama 3.1",
             }
         except Exception as e:
             print(f"⚠️ Error getting statistics: {e}")
@@ -339,7 +363,7 @@ class RAGManagerPGVector:
                 "vector_store_available": False,
                 "llm_available": True,
                 "database": "Memory backup",
-                "llm": "OpenAI GPT-3.5-turbo",
+                "llm": "Groq Llama 3.1",
             }
 
     def clear_index(self, user_id):

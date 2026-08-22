@@ -1,4 +1,4 @@
-# Lightweight deps for free hosting (no local torch / sentence-transformers)
+# Lightweight deps for free hosting
 requests>=2.31.0
 pydantic>=2.5.0
 fastapi
@@ -6,9 +6,10 @@ uvicorn[standard]
 python-dotenv
 langchain
 langchain-community
-langchain-openai
+langchain-core
 langchain-text-splitters
 openai
+fastembed
 psycopg2-binary
 pypdf
 pgvector
