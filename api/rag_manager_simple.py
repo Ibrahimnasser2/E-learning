@@ -9,12 +9,15 @@ from openai import OpenAI
 
 api_key = os.getenv('OPENAI_API_KEY')
 
+# OpenAI text-embedding-3-small uses 1536 dims.
+# FastEmbed experiment left Neon tables at 384 dims — must reset those tables.
+OPENAI_EMBEDDING_DIMS = 1536
+
 def user_collection_name(user_id):
     """
-    إنشاء اسم مجموعة فريدة لكل مستخدم
-    يضمن عزل بيانات كل مستخدم عن الآخرين
+    إنشاء اسم مجموعة فريدة لكل مستخدم (OpenAI 1536-d embeddings)
     """
-    return f"rag_collection_user_{user_id}"
+    return f"rag_oai1536_user_{user_id}"
 
 def get_file_hash(file_path):
     """
@@ -45,6 +48,63 @@ class RAGManagerPGVector:
             raise ValueError("PGVECTOR_CONNECTION_STRING or DATABASE_URL must be set")
         self.api_key = api_key
         self.client = OpenAI(api_key=api_key)
+        self.ensure_embedding_schema()
+
+    def ensure_embedding_schema(self):
+        """
+        Drop/recreate vector tables if they were created with a different embedding size
+        (e.g. FastEmbed 384-d vs OpenAI 1536-d).
+        """
+        try:
+            import psycopg2
+            conn = psycopg2.connect(self.connection_string)
+            cursor = conn.cursor()
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'langchain_pg_embedding'
+                )
+            """)
+            table_exists = cursor.fetchone()[0]
+            needs_reset = False
+
+            if table_exists:
+                cursor.execute("""
+                    SELECT format_type(a.atttypid, a.atttypmod)
+                    FROM pg_attribute a
+                    JOIN pg_class c ON a.attrelid = c.oid
+                    JOIN pg_namespace n ON c.relnamespace = n.oid
+                    WHERE c.relname = 'langchain_pg_embedding'
+                      AND a.attname = 'embedding'
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                """)
+                row = cursor.fetchone()
+                type_name = (row[0] if row else "") or ""
+                # e.g. vector(384) or vector(1536)
+                if f"vector({OPENAI_EMBEDDING_DIMS})" not in type_name:
+                    print(
+                        f"⚠️ Embedding column type is '{type_name}', "
+                        f"expected vector({OPENAI_EMBEDDING_DIMS}). Resetting vector tables."
+                    )
+                    needs_reset = True
+
+            if needs_reset:
+                cursor.execute("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE")
+                cursor.execute("DROP TABLE IF EXISTS langchain_pg_collection CASCADE")
+                cursor.execute("DELETE FROM indexed_files_tracking")
+                conn.commit()
+                print(
+                    "✅ Cleared incompatible vector tables. "
+                    "Please re-upload PDFs so they can be indexed with OpenAI embeddings."
+                )
+            else:
+                conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"⚠️ ensure_embedding_schema warning: {e}")
 
     def _get_pgvector_store(self, user_id):
         collection_name = user_collection_name(user_id)
