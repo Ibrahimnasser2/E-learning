@@ -1,8 +1,8 @@
 // Import axios library for HTTP requests
 import axios from 'axios';
 
-// Base server URL
-const API_BASE_URL = 'http://localhost:8000';
+// Base server URL (set REACT_APP_API_URL on Vercel for production)
+export const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 // RAG API interface
 export const ragAPI = {

@@ -1,6 +1,7 @@
 // استيراد المكتبات المطلوبة لإدارة حالة المصادقة
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { API_BASE_URL } from '../services/api';
 
 // إنشاء سياق المصادقة
 const AuthContext = createContext();
@@ -40,7 +41,7 @@ export const AuthProvider = ({ children }) => {
       if (token) {
         try {
           // التحقق من صحة الرمز مع الخادم
-          const response = await axios.get('http://localhost:8000/me');
+          const response = await axios.get(`${API_BASE_URL}/me`);
           setUser(response.data);
         } catch (error) {
           console.error('Authentication check failed:', error);
@@ -57,7 +58,7 @@ export const AuthProvider = ({ children }) => {
   const login = async (username, password, role) => {
     try {
       // إرسال بيانات الاعتماد إلى الخادم
-      const response = await axios.post('http://localhost:8000/login', {
+      const response = await axios.post(`${API_BASE_URL}/login`, {
         username,
         password,
         role
@@ -69,7 +70,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('token', access_token);
       
       // الحصول على معلومات المستخدم
-      const userResponse = await axios.get('http://localhost:8000/me');
+      const userResponse = await axios.get(`${API_BASE_URL}/me`);
       setUser(userResponse.data);
       
       return { success: true };
@@ -85,7 +86,7 @@ export const AuthProvider = ({ children }) => {
   const register = async (username, email, password, role, specialization = null) => {
     try {
       // إرسال بيانات التسجيل إلى الخادم
-      const response = await axios.post('http://localhost:8000/register', {
+      const response = await axios.post(`${API_BASE_URL}/register`, {
         username,
         email,
         password,
