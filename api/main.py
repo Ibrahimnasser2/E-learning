@@ -344,10 +344,10 @@ Now provide a direct answer using the web search results above. Do NOT say you d
                     # Add current question
                     messages.append({"role": "user", "content": web_search_prompt})
                     
-                    # Use Groq chat client for web-search answers
+                    # Use OpenAI directly to bypass RAG query that might interfere
                     try:
                         response_obj = rag_manager.client.chat.completions.create(
-                            model=rag_manager.chat_model,
+                            model="gpt-3.5-turbo",
                             messages=messages,
                             temperature=0.8,
                             max_tokens=512
@@ -356,7 +356,7 @@ Now provide a direct answer using the web search results above. Do NOT say you d
                         logger.info(f"✅ Generated answer from web search results")
                     except Exception as e:
                         logger.error(f"Error generating answer from web search: {e}")
-                        response = internal_answer or rag_manager._friendly_openai_error(e)
+                        response = internal_answer
                 else:
                     # Web search failed, use internal answer
                     logger.warning("Web search returned no results, using internal answer")
@@ -707,7 +707,7 @@ Now provide a direct answer using the web search results above. Do NOT say you d
                     # Use OpenAI directly to bypass RAG query that might interfere
                     try:
                         response_obj = rag_manager.client.chat.completions.create(
-                            model=rag_manager.chat_model,
+                            model="gpt-3.5-turbo",
                             messages=messages,
                             temperature=0.2,
                             max_tokens=512
