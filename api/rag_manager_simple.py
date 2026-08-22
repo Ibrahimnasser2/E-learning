@@ -9,9 +9,17 @@ from openai import OpenAI
 from fastembed import TextEmbedding
 
 # Groq (free) for chat — OpenAI-compatible API
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
-GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-DEFAULT_CHAT_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_BASE_URL_DEFAULT = "https://api.groq.com/openai/v1"
+DEFAULT_CHAT_MODEL = "llama-3.1-8b-instant"
+
+
+def _clean_env(name):
+    """Read env var and strip whitespace/quotes that often break API keys on Render."""
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip().strip('"').strip("'")
+    return value or None
 
 
 class FastEmbedLC(Embeddings):
@@ -51,20 +59,27 @@ class RAGManagerPGVector:
     """
 
     def __init__(self, embedding_model=None, api_key=None):
-        api_key = api_key or GROQ_API_KEY
+        # Prefer GROQ_API_KEY only (ignore stale OPENAI_API_KEY)
+        api_key = (api_key or _clean_env("GROQ_API_KEY") or "").strip()
         if not api_key:
-            raise ValueError("GROQ_API_KEY must be set")
+            raise ValueError("GROQ_API_KEY must be set in the server environment")
+        if not api_key.startswith("gsk_"):
+            print("⚠️ GROQ_API_KEY does not look like a Groq key (expected prefix gsk_)")
+
+        base_url = _clean_env("GROQ_BASE_URL") or GROQ_BASE_URL_DEFAULT
+        chat_model = _clean_env("GROQ_MODEL") or DEFAULT_CHAT_MODEL
 
         # FastEmbed: free local embeddings, much lighter than torch/sentence-transformers
         self.embedding_model = embedding_model or FastEmbedLC(
-            model_name=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+            model_name=_clean_env("EMBEDDING_MODEL") or "BAAI/bge-small-en-v1.5"
         )
-        self.connection_string = os.getenv("PGVECTOR_CONNECTION_STRING") or os.getenv("DATABASE_URL")
+        self.connection_string = _clean_env("PGVECTOR_CONNECTION_STRING") or _clean_env("DATABASE_URL")
         if not self.connection_string:
             raise ValueError("PGVECTOR_CONNECTION_STRING or DATABASE_URL must be set")
         self.api_key = api_key
-        self.chat_model = DEFAULT_CHAT_MODEL
-        self.client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
+        self.chat_model = chat_model
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        print(f"✅ Groq client ready (model={chat_model}, key=gsk_…{api_key[-4:]})")
 
     def _get_pgvector_store(self, user_id):
         collection_name = user_collection_name(user_id)
