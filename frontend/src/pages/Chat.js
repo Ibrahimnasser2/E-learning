@@ -192,20 +192,39 @@ const Chat = () => {
       return;
     }
 
+    const newUploads = acceptedFiles.map(file => ({
+      id: `local-${file.name}-${Date.now()}`,
+      name: file.name,
+      status: 'Uploading & indexing...',
+      error: null,
+    }));
+    setUploadingPDFs(prev => [...prev, ...newUploads]);
+    setActiveTab('files');
     setUploadingFile(true);
+
     try {
       for (const file of acceptedFiles) {
-        if (user.role === 'faculty') {
+        if (user.role !== 'faculty') continue;
+        try {
           await fileAPI.uploadFile(file, targetRoles, selectedSpecialization);
+          setUploadingPDFs(prev => prev.map(f =>
+            f.name === file.name && f.status === 'Uploading & indexing...'
+              ? { ...f, status: 'Success', error: null }
+              : f
+          ));
+        } catch (error) {
+          const msg = error.message || 'Upload/indexing failed';
+          setUploadingPDFs(prev => prev.map(f =>
+            f.name === file.name && f.status === 'Uploading & indexing...'
+              ? { ...f, status: 'Indexing failed', error: msg }
+              : f
+          ));
+          console.error('Error uploading file:', error);
         }
       }
       await loadFiles();
       await loadRagStats();
-      // Reset specialization after upload
       setSelectedSpecialization('');
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      alert(error.message || 'Error uploading file. Please try again.');
     } finally {
       setUploadingFile(false);
     }
@@ -222,7 +241,8 @@ const Chat = () => {
     const newUploads = acceptedFiles.filter(f => f.name.toLowerCase().endsWith('.pdf')).map(file => ({
       id: `${file.name}-${Date.now()}`,
       name: file.name,
-      status: 'Uploading & indexing...'
+      status: 'Uploading & indexing...',
+      error: null,
     }));
     setUploadingPDFs(prev => [...prev, ...newUploads]);
     setUploadingRagDoc(true);
@@ -230,11 +250,11 @@ const Chat = () => {
       if (!file.name.toLowerCase().endsWith('.pdf')) continue;
       try {
         await ragAPI.uploadDocument(file, true);
-        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading & indexing...' ? { ...f, status: 'Success' } : f));
+        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading & indexing...' ? { ...f, status: 'Success', error: null } : f));
         await loadFiles();
         await loadRagStats();
       } catch (error) {
-        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading & indexing...' ? { ...f, status: 'Fail to upload' } : f));
+        setUploadingPDFs(prev => prev.map(f => f.name === file.name && f.status === 'Uploading & indexing...' ? { ...f, status: 'Indexing failed', error: error.message || 'Upload failed' } : f));
         console.error('Error uploading RAG document:', error);
       }
     }
@@ -592,29 +612,13 @@ const Chat = () => {
                     </small>
                   </div>
                 )}
-                <div {...getRootProps()} className={`dropzone ${isDragActive ? 'active' : ''} ${uploadingFile ? 'uploading' : ''}`} style={{ marginBottom: 16, position: 'relative' }}>
+                <div {...getRootProps()} className={`dropzone ${isDragActive ? 'active' : ''}`} style={{ marginBottom: 16 }}>
                   <input {...getInputProps()} disabled={uploadingFile} />
-                  {uploadingFile ? (
-                    <div className="upload-progress-overlay">
-                      <Loader className="spin" size={40} />
-                      <p>Uploading and indexing…</p>
-                      <small>Please wait until indexing finishes. Chat will use this file immediately after.</small>
-                    </div>
-                  ) : isDragActive ? (
+                  {isDragActive ? (
                     <p>Drop files here...</p>
                   ) : (
-                    <p>Drag & drop files here, or click to select files</p>
+                    <p>{uploadingFile ? 'You can keep browsing — processing status is shown on each file below.' : 'Drag & drop files here, or click to select files'}</p>
                   )}
-                </div>
-              </div>
-            )}
-            {(uploadingFile || uploadingRagDoc) && (
-              <div className="global-upload-overlay" aria-live="polite">
-                <div className="global-upload-card">
-                  <Loader className="spin" size={48} />
-                  <h3>Processing document</h3>
-                  <p>Uploading and indexing into the knowledge base…</p>
-                  <small>Do not close this page until the spinner finishes.</small>
                 </div>
               </div>
             )}
@@ -624,21 +628,32 @@ const Chat = () => {
                 <p>No PDF files uploaded yet.</p>
               ) : (
                 <div className="files-grid">
-                  {mergedPDFs.map((file, idx) => (
-                    <div key={file.id || file.name + idx} className="file-card">
+                  {mergedPDFs.map((file, idx) => {
+                    const isProcessing = file.status === 'Uploading & indexing...';
+                    const isFailed = file.status === 'Indexing failed' || file.status === 'Fail to upload';
+                    return (
+                    <div key={file.id || file.name + idx} className={`file-card ${isProcessing ? 'file-card-processing' : ''}`}>
                       <div className="file-info">
-                        <strong>{file.name || file.original_filename}</strong>
+                        <div className="file-card-header">
+                          <strong>{file.name || file.original_filename}</strong>
+                          {isProcessing && (
+                            <span className="file-processing-badge">
+                              <Loader className="spin" size={18} />
+                              Processing…
+                            </span>
+                          )}
+                        </div>
                         {file.file_size && <p>Size: {formatFileSize(file.file_size || 0)}</p>}
                         {file.file_type && <p>Type: {file.file_type || 'Unknown'}</p>}
                         {file.specialization && <p style={{ color: '#2980b9', fontWeight: 600 }}>Specialization: {file.specialization}</p>}
                         {file.upload_time && <small>Uploaded: {formatDate(file.upload_time)}</small>}
-                        <div style={{ marginTop: 8, display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <div style={{ marginTop: 8, display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                           <span style={{
-                            color: file.status === 'Success' ? '#27ae60' : file.status === 'Fail to upload' ? '#e74c3c' : '#f39c12',
+                            color: file.status === 'Success' ? '#27ae60' : isFailed ? '#e74c3c' : '#f39c12',
                             fontWeight: 600,
                             fontSize: 13
-                          }}>{file.status}</span>
-                          {file.id && (
+                          }}>{file.status || 'Success'}</span>
+                          {file.id && !isProcessing && (
                             <button
                               onClick={() => fileAPI.downloadFile(file.id)}
                               style={{
@@ -657,9 +672,13 @@ const Chat = () => {
                             </button>
                           )}
                         </div>
+                        {file.error && (
+                          <p className="file-error-text">{file.error}</p>
+                        )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
               {mergedPDFs.length > 0 && (
