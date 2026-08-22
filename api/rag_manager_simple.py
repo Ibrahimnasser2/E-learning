@@ -94,6 +94,16 @@ class RAGManagerPGVector:
             if needs_reset:
                 cursor.execute("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE")
                 cursor.execute("DROP TABLE IF EXISTS langchain_pg_collection CASCADE")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS indexed_files_tracking (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        file_path TEXT NOT NULL,
+                        file_hash TEXT NOT NULL,
+                        indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, file_path)
+                    )
+                """)
                 cursor.execute("DELETE FROM indexed_files_tracking")
                 conn.commit()
                 print(
