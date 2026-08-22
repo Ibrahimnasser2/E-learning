@@ -1,6 +1,6 @@
 # استيراد المكتبات المطلوبة لبناء واجهة برمجة التطبيقات
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Depends, status, Body, Form
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
@@ -883,8 +883,12 @@ async def upload_file(
     unique_filename = f"{uuid.uuid4()}{file_extension}"
     file_path = os.path.join(UPLOADS_DIR, unique_filename)
     try:
+        # Read file once into memory for disk + durable DB storage
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Empty file")
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(file_bytes)
         # Ensure file exists before proceeding
         if not os.path.exists(file_path):
             raise HTTPException(status_code=500, detail="File not found after upload.")
@@ -895,8 +899,9 @@ async def upload_file(
             specialization=specialization if "student" in target_roles else None,
             filename=unique_filename,
             original_filename=file.filename,
-            file_size=getattr(file, 'size', None),
-            file_type=getattr(file, 'content_type', None)
+            file_size=len(file_bytes),
+            file_type=getattr(file, 'content_type', None) or "application/pdf",
+            file_content=file_bytes,
         )
         db.add(db_file)
         db.commit()
@@ -949,6 +954,8 @@ async def upload_file(
         # --- End: Index at upload time ---
 
         return FileUploadResponse.from_orm(db_file)
+    except HTTPException:
+        raise
     except Exception as e:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -1010,16 +1017,31 @@ async def download_file(
     if not has_access:
         raise HTTPException(status_code=403, detail="You do not have permission to download this file")
     
-    # Check if file exists on disk
+    # Prefer disk; fall back to durable DB blob (needed on Render free tier)
     file_path = os.path.join(UPLOADS_DIR, file_record.filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found on server")
-    
-    # Return the file
-    return FileResponse(
-        path=file_path,
-        filename=file_record.original_filename,
-        media_type='application/octet-stream'
+    if os.path.exists(file_path):
+        return FileResponse(
+            path=file_path,
+            filename=file_record.original_filename,
+            media_type=file_record.file_type or 'application/octet-stream'
+        )
+
+    if file_record.file_content:
+        headers = {
+            "Content-Disposition": f'attachment; filename="{file_record.original_filename}"'
+        }
+        return Response(
+            content=bytes(file_record.file_content),
+            media_type=file_record.file_type or 'application/octet-stream',
+            headers=headers,
+        )
+
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            "File content is missing on the server. "
+            "Old uploads before durable storage are gone after Render restarts — please re-upload the PDF."
+        ),
     )
 
 # نقاط نهاية RAG (محمية)

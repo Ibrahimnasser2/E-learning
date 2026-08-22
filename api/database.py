@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, JSON, Enum as SqlEnum
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, JSON, Enum as SqlEnum, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from enum import Enum as PyEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from pathlib import Path
+from sqlalchemy import text
 
 # Load api/.env regardless of the process working directory
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -76,6 +77,9 @@ class UploadedFile(Base):
     original_filename = Column(String(255), nullable=False)
     file_size = Column(Integer)
     file_type = Column(String(100))
+    # Persist bytes in Neon so downloads survive Render ephemeral disk resets
+    # deferred: not loaded on list queries (only on download)
+    file_content = deferred(Column(LargeBinary, nullable=True))
     upload_time = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship(
@@ -125,7 +129,14 @@ def ensure_system_users(db):
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
-    # No longer need to create system users
+    # Add durable file storage column if missing (create_all won't alter existing tables)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS file_content BYTEA"
+            ))
+    except Exception as e:
+        print(f"⚠️ Could not ensure file_content column: {e}")
 
 def get_db():
     db = SessionLocal()

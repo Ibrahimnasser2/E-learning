@@ -193,17 +193,23 @@ export const fileAPI = {
       const response = await axios.get(`${API_BASE_URL}/download-file/${fileId}`, {
         responseType: 'blob',
       });
-      // Create a blob URL and trigger download
-      const blob = new Blob([response.data], { type: response.headers['content-type'] });
+
+      // If backend returned JSON error as blob, surface the message
+      const contentType = response.headers['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        const text = await response.data.text();
+        const parsed = JSON.parse(text);
+        throw new Error(parsed.detail || 'Download failed');
+      }
+
+      const blob = new Blob([response.data], { type: contentType || 'application/octet-stream' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
 
-      // Get filename from Content-Disposition header or use default
       const contentDisposition = response.headers['content-disposition'];
-      let filename = 'download';
+      let filename = 'download.pdf';
       if (contentDisposition) {
-        // Improved regex to handle quoted and unquoted filenames better
         const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i);
         if (filenameMatch && filenameMatch[1]) {
           filename = filenameMatch[1].replace(/['"]/g, '');
@@ -214,20 +220,29 @@ export const fileAPI = {
       document.body.appendChild(link);
       link.click();
 
-      // Cleanup with delay to ensure download starts and avoid race conditions
       setTimeout(() => {
         if (link.parentNode) {
           document.body.removeChild(link);
         }
         window.URL.revokeObjectURL(url);
       }, 100);
-
     } catch (error) {
       console.error('Error downloading file:', error);
-      // Only show alert if it's not a successful download that somehow triggered an error
-      // But since we can't easily know, we'll keep the alert but make it clearer if needed.
-      // For now, the main fix is the setTimeout above which should prevent the error if it was due to cleanup.
-      alert('Error downloading file. Please try again.');
+      let message = 'Error downloading file. Please try again.';
+      if (error.response) {
+        try {
+          if (error.response.data instanceof Blob) {
+            const text = await error.response.data.text();
+            const parsed = JSON.parse(text);
+            message = parsed.detail || message;
+          } else if (error.response.data?.detail) {
+            message = error.response.data.detail;
+          }
+        } catch (_) { /* ignore */ }
+      } else if (error.message) {
+        message = error.message;
+      }
+      alert(message);
     }
   },
 
