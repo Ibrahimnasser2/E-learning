@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Depends, st
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from sqlalchemy.sql import func
 from typing import List, Optional
 from pydantic import BaseModel
@@ -980,7 +980,12 @@ async def get_user_files(
             )
         )
     
-    files = files_query.order_by(UploadedFile.upload_time.desc()).all()
+    files = (
+        files_query
+        .options(defer(UploadedFile.file_content))
+        .order_by(UploadedFile.upload_time.desc())
+        .all()
+    )
     return FileListResponse(files=[FileUploadResponse.from_orm(file) for file in files])
 
 @app.get("/download-file/{file_id}")

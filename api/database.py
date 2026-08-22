@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, JSON, Enum as SqlEnum, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, deferred
+from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
 import os
 from dotenv import load_dotenv
@@ -78,8 +78,7 @@ class UploadedFile(Base):
     file_size = Column(Integer)
     file_type = Column(String(100))
     # Persist bytes in Neon so downloads survive Render ephemeral disk resets
-    # deferred: not loaded on list queries (only on download)
-    file_content = deferred(Column(LargeBinary, nullable=True))
+    file_content = Column(LargeBinary, nullable=True)
     upload_time = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship(
