@@ -1694,7 +1694,7 @@ ROSTER_ID_COLUMNS = (
 )
 ROSTER_SECTION_COLUMNS = (
     "Section Number", "Section", "section_number",
-    "رقم الشعبة", "رقم القسم",
+    "رقم الشعبة", "الشعبة",
 )
 
 
@@ -1709,6 +1709,10 @@ def _get_owned_course(course_id: int, faculty_user: User, db: Session) -> Course
 
 def _find_student_by_university_id(db: Session, raw_id: str) -> Optional[User]:
     student_id = str(raw_id).strip()
+    if student_id.endswith(".0"):
+        stem = student_id[:-2]
+        if stem.isdigit():
+            student_id = stem
     if not student_id or student_id.lower() == "nan":
         return None
     return db.query(User).filter(
@@ -2191,6 +2195,10 @@ async def upload_course_roster(
         if not student_id_val:
             errors.append({"row": row_num, "reason": "Missing student ID"})
             continue
+        if student_id_val.endswith(".0"):
+            stem = student_id_val[:-2]
+            if stem.isdigit():
+                student_id_val = stem
 
         row_section = _roster_column(row, columns, ROSTER_SECTION_COLUMNS) or section_number
 

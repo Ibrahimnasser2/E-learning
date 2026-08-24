@@ -259,14 +259,16 @@ const FacultyCourses = () => {
   };
 
   const downloadRosterTemplate = () => {
+    const headers = ['الرقم الجامعي', 'رقم الشعبة'];
     const rows = [
-      ['الرقم الجامعي', 'رقم الشعبة'],
       ['441234567', '101'],
       ['441234568', '101'],
       ['441234569', '102'],
     ];
-    const csv = '\uFEFF' + rows.map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const csv = [headers, ...rows]
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -480,14 +482,24 @@ const FacultyCourses = () => {
                 <button className="modal-close" onClick={() => setManageCourse(null)}>×</button>
               </div>
               <p className="roster-help">
-                Upload student university IDs already provisioned by the administrator.
-                Each ID is validated against the master list — unknown IDs show{' '}
-                <strong>Student ID not found</strong>. Section number is optional.
+                Upload student IDs already provisioned by the administrator. Each ID is validated against
+                the master list — unknown IDs show <strong>Student ID not found</strong>. No new accounts are created.
               </p>
-              <div className="roster-format-box">
-                <strong>Excel columns:</strong>
-                <span>الرقم الجامعي</span>
-                <span>رقم الشعبة (optional)</span>
+              <div className="roster-example-table-wrap">
+                <table className="roster-example-table">
+                  <thead>
+                    <tr>
+                      <th>الرقم الجامعي</th>
+                      <th>رقم الشعبة</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>441234567</td><td>101</td></tr>
+                    <tr><td>441234568</td><td>101</td></tr>
+                    <tr><td>441234569</td><td>102</td></tr>
+                  </tbody>
+                </table>
+                <p className="roster-example-note">رقم الشعبة optional — or set a default below for all rows.</p>
               </div>
               <div className="form-group">
                 <label>Default section number (optional)</label>
@@ -499,7 +511,7 @@ const FacultyCourses = () => {
                 />
               </div>
               <button type="button" className="btn btn-ghost btn-sm" onClick={downloadRosterTemplate}>
-                <FileSpreadsheet size={14} /> Download template (CSV)
+                <FileSpreadsheet size={14} /> Download roster template
               </button>
               <div className="form-group">
                 <label>Excel file (.xlsx)</label>

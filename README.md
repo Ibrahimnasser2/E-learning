@@ -109,7 +109,7 @@ npm start
 3. Download **two separate templates** (Students + Faculty) and save as `.xlsx`:
    - **Students file:** `الرقم الجامعي`, `الاسم`, `الهاتف`
    - **Faculty file:** `الاسم`, `البريد الجامعي`, `الهاتف`
-   Sample files: `test-data/students.xlsx` and `test-data/faculty.xlsx`
+   Sample files: `test-data/students.xlsx`, `test-data/faculty.xlsx`, and `test-data/section-roster-faculty.xlsx` (for instructors).
 4. Upload each Excel file separately in Admin Console (students first, then faculty).
 5. Provisioned users log in with their **University ID / account** as username and initial password `MANAMU` + last 4 digits of their ID (e.g. `MANAMU4567`).
 
@@ -117,7 +117,7 @@ npm start
 
 1. Log in with faculty credentials provisioned by the administrator.
 2. Open **My Courses** and create a course (title, specialization, etc.).
-3. Click **Section Roster** — upload `section-roster.xlsx` with **الرقم الجامعي** (and optional **رقم الشعبة**). Sample: `test-data/section-roster.xlsx`
+3. Click **Section Roster** — upload Excel with **الرقم الجامعي** (and optional **رقم الشعبة**). IDs must exist in the admin master list.
 4. Click **Upload Materials** — opens Chat with that course selected. Upload PDFs **for students**; materials are indexed only for students on the roster.
 5. Students in that section can open **Chat**, pick the course, and use the AI tutor.
 
