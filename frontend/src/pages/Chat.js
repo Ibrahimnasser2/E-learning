@@ -554,10 +554,10 @@ const Chat = () => {
               <Upload size={18} />{sidebarOpen && ' Upload Materials'}
             </button>
           )}
-          {/* My Courses = separate platform */}
+          {/* Course Management = independent platform (not student curriculum) */}
           {user?.role === 'faculty' && (
-            <button className="sidebar-button" onClick={() => navigate('/courses/faculty')} title="Courses">
-              <BookOpen size={18} />{sidebarOpen && ' My Courses'}
+            <button className="sidebar-button" onClick={() => navigate('/courses/faculty')} title="Course Management">
+              <BookOpen size={18} />{sidebarOpen && ' Course Management'}
             </button>
           )}
           {user?.role === 'student' && (
@@ -706,8 +706,8 @@ const Chat = () => {
 
               <div className="roster-panel-body">
                 {myCourses.length === 0 && (
-                  <small className="field-hint warn">
-                    Create courses with a Level in My Courses first, then use their IDs in the Excel.
+                  <small className="field-hint">
+                    Use course codes from the curriculum (e.g. 2310 ويب). Template includes examples.
                   </small>
                 )}
 
@@ -730,10 +730,9 @@ const Chat = () => {
                       ))}
                     </tbody>
                   </table>
-                  {myCourses.length > 0 && (
+                  {catalogLevels.length > 0 && (
                     <p className="field-hint" style={{ marginTop: 8 }}>
-                      Your course IDs:{' '}
-                      {myCourses.map((c) => `${c.id}=${c.title}${c.level ? ` (L${c.level})` : ''}`).join(' · ')}
+                      Curriculum levels: {catalogLevels.map((lv) => `${lv.id}=${lv.label_ar}`).join(' · ')}
                     </p>
                   )}
                 </div>

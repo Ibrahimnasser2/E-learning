@@ -2048,9 +2048,10 @@ async def get_my_courses(
     - للطلاب: الكورسات المطابقة لتخصصهم
     """
     if current_user.role == "faculty":
-        # أعضاء هيئة التدريس يرون جميع كورساتهم
+        # Course Management platform: faculty-owned courses only (not curriculum catalog clones)
         courses = db.query(Course).filter(
-            Course.faculty_id == current_user.id
+            Course.faculty_id == current_user.id,
+            Course.course_code.is_(None),
         ).order_by(Course.created_at.desc()).all()
     elif current_user.role == "student":
         enrolled_ids = _student_enrolled_course_ids(db, current_user.id)

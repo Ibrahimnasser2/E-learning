@@ -10,12 +10,8 @@ import {
   ExternalLink,
   Search,
   Filter,
-  MoreVertical,
-  Users,
   Globe,
   Lock,
-  Upload,
-  FileSpreadsheet
 } from 'lucide-react';
 import './FacultyCourses.css';
 
@@ -34,7 +30,6 @@ const FacultyCourses = () => {
     title: '',
     description: '',
     specialization: '',
-    level: '',
     course_url: '',
     course_type: 'internal',
     is_active: 'active',
@@ -54,12 +49,6 @@ const FacultyCourses = () => {
 
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeTimeout, setScrapeTimeout] = useState(null);
-  const [manageCourse, setManageCourse] = useState(null);
-  const [rosterFile, setRosterFile] = useState(null);
-  const [sectionNumber, setSectionNumber] = useState('');
-  const [rosterLoading, setRosterLoading] = useState(false);
-  const [rosterResult, setRosterResult] = useState(null);
-  const [rosterList, setRosterList] = useState([]);
 
   // Extract YouTube thumbnail URL from YouTube video URL
   // Returns the main video thumbnail (not generic playlist thumbnail)
@@ -206,7 +195,6 @@ const FacultyCourses = () => {
       title: course.title,
       description: course.description || '',
       specialization: course.specialization,
-      level: course.level || '',
       course_url: course.course_url || '',
       course_type: course.course_type || 'internal',
       is_active: course.is_active || 'active',
@@ -226,65 +214,11 @@ const FacultyCourses = () => {
     }
   };
 
-  const openManageCourse = async (course) => {
-    setManageCourse(course);
-    setRosterFile(null);
-    setRosterResult(null);
-    setSectionNumber('');
-    try {
-      const roster = await courseAPI.getCourseRoster(course.id);
-      setRosterList(roster || []);
-    } catch (e) {
-      setRosterList([]);
-    }
-  };
-
-  const handleRosterUpload = async () => {
-    if (!manageCourse || !rosterFile) return;
-    setRosterLoading(true);
-    setRosterResult(null);
-    try {
-      const res = await courseAPI.uploadCourseRoster(
-        manageCourse.id,
-        rosterFile,
-        sectionNumber || null
-      );
-      setRosterResult(res);
-      const roster = await courseAPI.getCourseRoster(manageCourse.id);
-      setRosterList(roster || []);
-      loadCourses();
-    } catch (e) {
-      alert(e?.response?.data?.detail || 'Roster upload failed');
-    } finally {
-      setRosterLoading(false);
-    }
-  };
-
-  const downloadRosterTemplate = () => {
-    const headers = ['الرقم الجامعي', 'رقم الشعبة'];
-    const rows = [
-      ['441234567', '101'],
-      ['441234568', '101'],
-      ['441234569', '102'],
-    ];
-    const csv = [headers, ...rows]
-      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-      .join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'section-roster-template.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const resetForm = () => {
     setFormData({
       title: '',
       description: '',
       specialization: '',
-      level: '',
       course_url: '',
       course_type: 'internal',
       is_active: 'active',
@@ -316,7 +250,9 @@ const FacultyCourses = () => {
               <BookOpen className="icon-lg" />
               <span>Course Management</span>
             </h1>
-            <p className="page-subtitle">Create, manage and track your educational content</p>
+            <p className="page-subtitle">
+              Independent course library — create and manage your content (not linked to student curriculum)
+            </p>
           </div>
           <div className="header-actions">
             <button className="btn btn-secondary" onClick={() => navigate('/chat')}>
@@ -441,139 +377,23 @@ const FacultyCourses = () => {
 
                   <div className="course-meta">
                     <div className="meta-item">
-                      <span className="meta-label">Level</span>
-                      <span className="meta-value">{course.level || '—'}</span>
-                    </div>
-                    <div className="meta-item">
-                      <span className="meta-label">ID</span>
-                      <span className="meta-value">#{course.id}</span>
-                    </div>
-                    <div className="meta-item">
                       <span className="meta-label">Specialization</span>
                       <span className="meta-value">{course.specialization}</span>
                     </div>
                     <div className="meta-item">
-                      <span className="meta-label">Students</span>
+                      <span className="meta-label">Type</span>
                       <span className="meta-value">
-                        <Users size={14} />
-                        {course.enrollment_count || 0}
+                        {course.course_type === 'external' ? (
+                          <><Globe size={14} /> External</>
+                        ) : (
+                          <><Lock size={14} /> Internal</>
+                        )}
                       </span>
                     </div>
                   </div>
                 </div>
-
-                <div className="course-card-footer course-actions-row">
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    onClick={() => openManageCourse(course)}
-                  >
-                    <Users size={14} />
-                    Section Roster
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={() => navigate(`/chat?courseId=${course.id}`)}
-                  >
-                    <Upload size={14} />
-                    Upload Materials
-                  </button>
-                </div>
               </div>
             ))}
-          </div>
-        )}
-
-        {manageCourse && (
-          <div className="modal-overlay" onClick={() => setManageCourse(null)}>
-            <div className="modal-content roster-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2>Section Roster — {manageCourse.title}</h2>
-                <button className="modal-close" onClick={() => setManageCourse(null)}>×</button>
-              </div>
-              <p className="roster-help">
-                Upload student IDs already provisioned by the administrator. Each ID is validated against
-                the master list — unknown IDs show <strong>Student ID not found</strong>. No new accounts are created.
-              </p>
-              <div className="roster-example-table-wrap">
-                <table className="roster-example-table">
-                  <thead>
-                    <tr>
-                      <th>الرقم الجامعي</th>
-                      <th>رقم الشعبة</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr><td>441234567</td><td>101</td></tr>
-                    <tr><td>441234568</td><td>101</td></tr>
-                    <tr><td>441234569</td><td>102</td></tr>
-                  </tbody>
-                </table>
-                <p className="roster-example-note">رقم الشعبة optional — or set a default below for all rows.</p>
-              </div>
-              <div className="form-group">
-                <label>Default section number (optional)</label>
-                <input
-                  type="text"
-                  value={sectionNumber}
-                  onChange={(e) => setSectionNumber(e.target.value)}
-                  placeholder="e.g. 101"
-                />
-              </div>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={downloadRosterTemplate}>
-                <FileSpreadsheet size={14} /> Download roster template
-              </button>
-              <div className="form-group">
-                <label>Excel file (.xlsx)</label>
-                <input
-                  type="file"
-                  accept=".xlsx,.xls"
-                  onChange={(e) => setRosterFile(e.target.files?.[0] || null)}
-                />
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={!rosterFile || rosterLoading}
-                onClick={handleRosterUpload}
-              >
-                {rosterLoading ? 'Uploading…' : 'Upload & Link Students'}
-              </button>
-              {rosterResult && (
-                <div className="roster-result">
-                  <p>
-                    Linked <strong>{rosterResult.linked}</strong> · Skipped <strong>{rosterResult.skipped}</strong>
-                    {rosterResult.reindexed_students > 0 && (
-                      <> · Re-indexed materials for <strong>{rosterResult.reindexed_students}</strong> students</>
-                    )}
-                  </p>
-                  {rosterResult.errors?.length > 0 && (
-                    <ul>
-                      {rosterResult.errors.map((err, i) => (
-                        <li key={i}>
-                          Row {err.row}: {err.reason}
-                          {err.university_id ? ` (${err.university_id})` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-              <h3>Enrolled students ({rosterList.length})</h3>
-              {rosterList.length === 0 ? (
-                <p>No students linked yet.</p>
-              ) : (
-                <ul className="roster-list">
-                  {rosterList.map((r) => (
-                    <li key={r.id}>
-                      {r.university_id || r.student_id} — {r.student_name || 'Student'}
-                      {r.section_number ? ` · Section ${r.section_number}` : ''}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
           </div>
         )}
 
@@ -607,7 +427,7 @@ const FacultyCourses = () => {
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                     rows="4"
-                    placeholder="What will students learn in this course?"
+                    placeholder="What is this course about?"
                   />
                 </div>
 
@@ -625,18 +445,6 @@ const FacultyCourses = () => {
                         <option key={spec} value={spec}>{spec}</option>
                       ))}
                     </select>
-                  </div>
-
-                  <div className="form-group">
-                    <label htmlFor="level">Level *</label>
-                    <input
-                      type="text"
-                      id="level"
-                      value={formData.level}
-                      onChange={(e) => setFormData({ ...formData, level: e.target.value })}
-                      required
-                      placeholder="e.g. 1 or 2"
-                    />
                   </div>
 
                   <div className="form-group">
