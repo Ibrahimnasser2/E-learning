@@ -109,20 +109,12 @@ const AdminConsole = () => {
       <main className="admin-main">
         <section className="admin-stats">
           <div className="stat-card">
-            <span className="stat-label">Total Users</span>
-            <span className="stat-value">{summary?.total ?? '—'}</span>
-          </div>
-          <div className="stat-card">
             <span className="stat-label">Students</span>
-            <span className="stat-value">{summary?.students ?? '—'}</span>
+            <span className="stat-value">{summary?.students ?? 0}</span>
           </div>
           <div className="stat-card">
             <span className="stat-label">Faculty</span>
-            <span className="stat-value">{summary?.faculty ?? '—'}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Administrators</span>
-            <span className="stat-value">{summary?.admins ?? '—'}</span>
+            <span className="stat-value">{summary?.faculty ?? 0}</span>
           </div>
         </section>
 
@@ -133,56 +125,57 @@ const AdminConsole = () => {
             Email and password are generated automatically for each file.
           </p>
 
-          <div className="requirements-table-wrap">
-            <table className="requirements-table">
-              <thead>
-                <tr>
-                  <th>Column</th>
-                  <th>Arabic</th>
-                  <th>For</th>
-                  <th>Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>University ID</td>
-                  <td>الرقم الجامعي</td>
-                  <td>Students</td>
-                  <td>Login username · email → <code>{'{id}@student.kk.edu.sa'}</code></td>
-                </tr>
-                <tr>
-                  <td>Name</td>
-                  <td>الاسم</td>
-                  <td>All</td>
-                  <td>Full display name</td>
-                </tr>
-                <tr>
-                  <td>Phone</td>
-                  <td>الهاتف</td>
-                  <td>All</td>
-                  <td>Contact number</td>
-                </tr>
-                <tr>
-                  <td>University Email</td>
-                  <td>البريد الجامعي</td>
-                  <td>Faculty</td>
-                  <td>Must be <code>@kk.edu.sa</code> · login = local-part before @</td>
-                </tr>
-                <tr>
-                  <td>Specialization</td>
-                  <td>التخصص</td>
-                  <td>Students</td>
-                  <td>Optional</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <div className="example-sections">
+            <div className="example-block">
+              <h3>Students file</h3>
+              <table className="requirements-table">
+                <thead>
+                  <tr>
+                    <th>الرقم الجامعي</th>
+                    <th>الاسم</th>
+                    <th>الهاتف</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {STUDENT_TEMPLATE_SAMPLE.map((row, i) => (
+                    <tr key={i}>
+                      {row.map((cell, j) => (
+                        <td key={j}>{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="example-note">
+                Email: <code>{'{id}@student.kk.edu.sa'}</code> · Password: <code>MANAMU</code> + last 4 digits
+              </p>
+            </div>
 
-          <p className="password-note">
-            <strong>Students:</strong> password <strong>MANAMU</strong> + last 4 digits of university ID.
-            <strong> Faculty:</strong> password <strong>MANAMU</strong> + last 4 characters of email account
-            (e.g. <code>ahmed.ali@kk.edu.sa</code> → <code>MANAMU.ali</code>).
-          </p>
+            <div className="example-block">
+              <h3>Faculty file</h3>
+              <table className="requirements-table">
+                <thead>
+                  <tr>
+                    <th>الاسم</th>
+                    <th>البريد الجامعي</th>
+                    <th>الهاتف</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {FACULTY_TEMPLATE_SAMPLE.map((row, i) => (
+                    <tr key={i}>
+                      {row.map((cell, j) => (
+                        <td key={j}>{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="example-note">
+                Login = part before @ · Password: <code>MANAMU</code> + last 4 chars (e.g. <code>MANAMU.ali</code>)
+              </p>
+            </div>
+          </div>
 
           <div className="admin-template-actions">
             <button type="button" className="admin-btn admin-btn-secondary" onClick={downloadStudentTemplate}>
