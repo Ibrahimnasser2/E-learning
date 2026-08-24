@@ -285,19 +285,26 @@ class RAGManagerPGVector:
     def query(self, query, user_id, top_k=5, allowed_sources=None):
         """
         البحث في الوثائق المفهرسة
-        allowed_sources: optional set/list of file paths — chunks from other sources are excluded
+        allowed_sources:
+          None  → no path filter
+          []    → allow nothing (isolation)
+          list  → only those file paths
         """
         try:
+            if allowed_sources is not None and len(list(allowed_sources)) == 0:
+                print(f"🔒 RAG blocked: empty allowed_sources for user {user_id}")
+                return []
             clean_query = (query or "").replace('"', "").replace("'", "").strip()
             print(f"🔍 RAG Query: user_id={user_id}, query='{clean_query[:120]}...', top_k={top_k}")
             print(f"📚 Collection: {user_collection_name(user_id)}")
             pgvector_store = self._get_pgvector_store(user_id)
 
             results = []
+            fetch_k = top_k * 3 if allowed_sources is not None else top_k
             try:
-                scored = pgvector_store.similarity_search_with_relevance_scores(clean_query, k=top_k * 3 if allowed_sources else top_k)
+                scored = pgvector_store.similarity_search_with_relevance_scores(clean_query, k=fetch_k)
                 for doc, score in scored:
-                    if allowed_sources and not self._source_allowed(doc, allowed_sources):
+                    if allowed_sources is not None and not self._source_allowed(doc, allowed_sources):
                         continue
                     try:
                         print(f"   ↪ score={float(score):.4f} preview={doc.page_content[:80]!r}")
@@ -309,9 +316,9 @@ class RAGManagerPGVector:
                         break
             except Exception as e:
                 print(f"⚠️ scored search failed, falling back: {e}")
-                docs = pgvector_store.similarity_search(clean_query, k=top_k * 3 if allowed_sources else top_k)
+                docs = pgvector_store.similarity_search(clean_query, k=fetch_k)
                 for d in docs:
-                    if allowed_sources and not self._source_allowed(d, allowed_sources):
+                    if allowed_sources is not None and not self._source_allowed(d, allowed_sources):
                         continue
                     if d and d.page_content:
                         results.append(d.page_content)
@@ -330,8 +337,10 @@ class RAGManagerPGVector:
             return []
 
     def _source_allowed(self, doc, allowed_sources):
-        if not allowed_sources:
+        if allowed_sources is None:
             return True
+        if len(list(allowed_sources)) == 0:
+            return False
         source = (doc.metadata or {}).get("source") or ""
         src_norm = os.path.normpath(source).lower()
         src_base = os.path.basename(src_norm)
@@ -365,8 +374,10 @@ class RAGManagerPGVector:
         return merged[: max(top_k, 10)]
 
     def _metadata_source_allowed(self, metadata, allowed_sources):
-        if not allowed_sources:
+        if allowed_sources is None:
             return True
+        if len(list(allowed_sources)) == 0:
+            return False
         if not metadata:
             return False
         if isinstance(metadata, str):
@@ -385,7 +396,9 @@ class RAGManagerPGVector:
         return False
 
     def _filter_doc_rows(self, rows, allowed_sources, top_k):
-        if not allowed_sources:
+        if allowed_sources is not None and len(list(allowed_sources)) == 0:
+            return []
+        if allowed_sources is None:
             return [r[0] for r in rows[:top_k] if r and r[0]]
         filtered = []
         for row in rows:
@@ -402,11 +415,13 @@ class RAGManagerPGVector:
     def _vector_sql_fallback(self, query, user_id, top_k=5, allowed_sources=None):
         """Raw pgvector cosine distance when LangChain search returns nothing."""
         try:
+            if allowed_sources is not None and len(list(allowed_sources)) == 0:
+                return []
             import psycopg2
             collection_name = user_collection_name(user_id)
             embedding = self.embedding_model.embed_query(query)
             vector_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
-            fetch_k = top_k * 5 if allowed_sources else top_k
+            fetch_k = top_k * 5 if allowed_sources is not None else top_k
             conn = psycopg2.connect(self.connection_string)
             cursor = conn.cursor()
             cursor.execute(
@@ -433,12 +448,14 @@ class RAGManagerPGVector:
     def _keyword_fallback(self, query, user_id, top_k=5, allowed_sources=None):
         """If vector search returns nothing, try simple keyword match in stored docs."""
         try:
+            if allowed_sources is not None and len(list(allowed_sources)) == 0:
+                return []
             import psycopg2
             terms = [t for t in re.findall(r"[A-Za-z0-9\u0600-\u06FF]+", query or "") if len(t) >= 2][:10]
             if not terms:
                 return []
             collection_name = user_collection_name(user_id)
-            fetch_k = top_k * 5 if allowed_sources else top_k
+            fetch_k = top_k * 5 if allowed_sources is not None else top_k
             conn = psycopg2.connect(self.connection_string)
             cursor = conn.cursor()
             like_clauses = " OR ".join(["e.document ILIKE %s" for _ in terms])

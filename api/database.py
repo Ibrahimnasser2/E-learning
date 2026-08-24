@@ -50,6 +50,7 @@ class User(Base):
     university_id = Column(String(64), unique=True, index=True, nullable=True)
     display_name = Column(String(255), nullable=True)
     phone = Column(String(32), nullable=True)
+    level = Column(String(64), nullable=True, index=True)  # academic level from faculty roster
 
     chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     uploaded_files = relationship(
@@ -82,6 +83,8 @@ class UploadedFile(Base):
     target_roles = Column(JSONB, nullable=False)
     specialization = Column(String(255), nullable=True)  # التخصص المستهدف للملف (للطلاب فقط)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    course_ids = Column(JSONB, nullable=True)  # multi-course attach for student materials
+    level = Column(String(64), nullable=True, index=True)  # level selected at upload
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_size = Column(Integer)
@@ -107,6 +110,7 @@ class Course(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     specialization = Column(String(255), nullable=False, index=True)  # التخصص المطلوب للكورس
+    level = Column(String(64), nullable=True, index=True)  # e.g. "1", "2"
     faculty_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -125,6 +129,7 @@ class CourseEnrollment(Base):
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     section_number = Column(String(64), nullable=True)
+    level = Column(String(64), nullable=True, index=True)
     enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
     progress = Column(Integer, default=0)  # نسبة الإنجاز من 0 إلى 100
 
@@ -196,6 +201,21 @@ def create_tables():
             ))
             conn.execute(text(
                 "ALTER TABLE course_enrollments ADD COLUMN IF NOT EXISTS section_number VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS level VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE courses ADD COLUMN IF NOT EXISTS level VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE course_enrollments ADD COLUMN IF NOT EXISTS level VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS course_ids JSONB"
+            ))
+            conn.execute(text(
+                "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS level VARCHAR(64)"
             ))
             conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_university_id "

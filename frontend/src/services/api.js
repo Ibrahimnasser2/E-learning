@@ -152,8 +152,8 @@ export const chatAPI = {
 
 // File API interface
 export const fileAPI = {
-  // Upload file to server (with target_roles and specialization)
-  uploadFile: async (file, targetRoles = null, specialization = null, courseId = null) => {
+  // Upload file to server (with target_roles, specialization, multi course_ids, level)
+  uploadFile: async (file, targetRoles = null, specialization = null, courseId = null, courseIds = null, level = null) => {
     if (!targetRoles || !Array.isArray(targetRoles) || targetRoles.length === 0) {
       throw new Error('Please select at least one target role before uploading.');
     }
@@ -163,8 +163,15 @@ export const fileAPI = {
     if (specialization) {
       formData.append('specialization', specialization);
     }
-    if (courseId) {
-      formData.append('course_id', String(courseId));
+    const ids = Array.isArray(courseIds) && courseIds.length
+      ? courseIds.map(Number)
+      : (courseId ? [Number(courseId)] : []);
+    if (ids.length) {
+      formData.append('course_ids', JSON.stringify(ids));
+      formData.append('course_id', String(ids[0]));
+    }
+    if (level) {
+      formData.append('level', String(level));
     }
     try {
       const response = await axios.post(`${API_BASE_URL}/upload-file`, formData, {
@@ -385,6 +392,17 @@ export const courseAPI = {
     }
     const response = await axios.post(
       `${API_BASE_URL}/courses/${courseId}/upload-roster`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
+    return response.data;
+  },
+
+  uploadFacultyStudents: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await axios.post(
+      `${API_BASE_URL}/faculty/upload-students`,
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     );

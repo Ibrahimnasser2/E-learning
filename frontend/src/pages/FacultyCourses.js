@@ -34,6 +34,7 @@ const FacultyCourses = () => {
     title: '',
     description: '',
     specialization: '',
+    level: '',
     course_url: '',
     course_type: 'internal',
     is_active: 'active',
@@ -205,6 +206,7 @@ const FacultyCourses = () => {
       title: course.title,
       description: course.description || '',
       specialization: course.specialization,
+      level: course.level || '',
       course_url: course.course_url || '',
       course_type: course.course_type || 'internal',
       is_active: course.is_active || 'active',
@@ -282,6 +284,7 @@ const FacultyCourses = () => {
       title: '',
       description: '',
       specialization: '',
+      level: '',
       course_url: '',
       course_type: 'internal',
       is_active: 'active',
@@ -437,6 +440,14 @@ const FacultyCourses = () => {
                   </p>
 
                   <div className="course-meta">
+                    <div className="meta-item">
+                      <span className="meta-label">Level</span>
+                      <span className="meta-value">{course.level || '—'}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">ID</span>
+                      <span className="meta-value">#{course.id}</span>
+                    </div>
                     <div className="meta-item">
                       <span className="meta-label">Specialization</span>
                       <span className="meta-value">{course.specialization}</span>
@@ -614,6 +625,18 @@ const FacultyCourses = () => {
                         <option key={spec} value={spec}>{spec}</option>
                       ))}
                     </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="level">Level *</label>
+                    <input
+                      type="text"
+                      id="level"
+                      value={formData.level}
+                      onChange={(e) => setFormData({ ...formData, level: e.target.value })}
+                      required
+                      placeholder="e.g. 1 or 2"
+                    />
                   </div>
 
                   <div className="form-group">

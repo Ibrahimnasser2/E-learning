@@ -103,6 +103,8 @@ class FileUploadResponse(BaseModel):
     file_type: Optional[str] = None
     specialization: Optional[str] = None
     course_id: Optional[int] = None
+    course_ids: Optional[List[int]] = None
+    level: Optional[str] = None
     upload_time: datetime
 
     class Config:
@@ -134,6 +136,7 @@ class CourseCreate(BaseModel):
     title: str
     description: Optional[str] = None
     specialization: str
+    level: Optional[str] = None
     course_url: Optional[str] = None
     course_type: Optional[str] = "internal"  # internal, external
     thumbnail_url: Optional[str] = None  # Will be auto-generated for YouTube URLs
@@ -142,6 +145,7 @@ class CourseUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     specialization: Optional[str] = None
+    level: Optional[str] = None
     course_url: Optional[str] = None
     is_active: Optional[str] = None
     course_type: Optional[str] = None
@@ -152,6 +156,7 @@ class CourseResponse(BaseModel):
     title: str
     description: Optional[str]
     specialization: str
+    level: Optional[str] = None
     faculty_id: int
     faculty_name: Optional[str] = None
     created_at: datetime
@@ -179,6 +184,7 @@ class CourseEnrollmentResponse(BaseModel):
     enrolled_at: datetime
     progress: int
     section_number: Optional[str] = None
+    level: Optional[str] = None
     student_name: Optional[str] = None
     university_id: Optional[str] = None
     course: Optional[CourseResponse] = None
@@ -188,6 +194,13 @@ class CourseEnrollmentResponse(BaseModel):
 
 
 class CourseRosterUploadResponse(BaseModel):
+    linked: int
+    skipped: int
+    errors: List[dict]
+    reindexed_students: int = 0
+
+
+class FacultyStudentsUploadResponse(BaseModel):
     linked: int
     skipped: int
     errors: List[dict]

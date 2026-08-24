@@ -24,10 +24,10 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 
-const ROSTER_TEMPLATE_ROWS = [
-  ['441234567', '101'],
-  ['441234568', '101'],
-  ['441234569', '102'],
+const STUDENT_ASSIGN_TEMPLATE_ROWS = [
+  ['441234567', '1', '1,2'],
+  ['441234568', '1', '1'],
+  ['441234569', '2', '3,4'],
 ];
 
 const Chat = () => {
@@ -68,14 +68,22 @@ const Chat = () => {
   const [targetRoles, setTargetRoles] = useState([]);
   const [selectedSpecialization, setSelectedSpecialization] = useState('');
   const [selectedCourseId, setSelectedCourseId] = useState('');
+  const [selectedCourseIds, setSelectedCourseIds] = useState([]);
+  const [uploadLevel, setUploadLevel] = useState('');
   const [myCourses, setMyCourses] = useState([]);
   const [rosterFile, setRosterFile] = useState(null);
   const [rosterLoading, setRosterLoading] = useState(false);
   const [rosterResult, setRosterResult] = useState(null);
-  const [rosterSectionNumber, setRosterSectionNumber] = useState('');
-  const [rosterList, setRosterList] = useState([]);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+
+  const courseLevels = Array.from(
+    new Set((myCourses || []).map((c) => c.level).filter(Boolean).map(String))
+  ).sort();
+
+  const coursesForUploadLevel = uploadLevel
+    ? myCourses.filter((c) => String(c.level || '') === String(uploadLevel))
+    : myCourses;
 
   // التمرير التلقائي إلى الأسفل عند وصول رسائل جديدة
   const scrollToBottom = () => {
@@ -106,46 +114,28 @@ const Chat = () => {
 
   useEffect(() => {
     const cid = searchParams.get('courseId');
-    if (cid) setSelectedCourseId(cid);
-  }, [searchParams]);
-
-  useEffect(() => {
-    if (user?.role === 'faculty' && selectedCourseId) {
-      loadCourseRoster(selectedCourseId);
-    } else {
-      setRosterList([]);
+    if (cid) {
+      setSelectedCourseId(cid);
+      setSelectedCourseIds((prev) => (prev.includes(cid) ? prev : [...prev, cid]));
+      if (user?.role === 'faculty') setActiveTab('materials');
     }
-  }, [user?.role, selectedCourseId]);
-
-  const loadCourseRoster = async (courseId) => {
-    try {
-      const roster = await courseAPI.getCourseRoster(courseId);
-      setRosterList(roster || []);
-    } catch (e) {
-      console.error('Error loading roster:', e);
-      setRosterList([]);
-    }
-  };
+  }, [searchParams, user?.role]);
 
   const downloadRosterTemplate = () => {
-    const headers = ['الرقم الجامعي', 'رقم الشعبة'];
-    const csv = [headers, ...ROSTER_TEMPLATE_ROWS]
+    const headers = ['الرقم الجامعي', 'المستوى', 'المقررات'];
+    const csv = [headers, ...STUDENT_ASSIGN_TEMPLATE_ROWS]
       .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
       .join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'section-roster-template.csv';
+    a.download = 'students-level-courses-template.csv';
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const handleRosterUpload = async () => {
-    if (!selectedCourseId) {
-      alert('Please select a course first.');
-      return;
-    }
     if (!rosterFile) {
       alert('Please choose an Excel file.');
       return;
@@ -153,16 +143,12 @@ const Chat = () => {
     setRosterLoading(true);
     setRosterResult(null);
     try {
-      const res = await courseAPI.uploadCourseRoster(
-        Number(selectedCourseId),
-        rosterFile,
-        rosterSectionNumber || null
-      );
+      const res = await courseAPI.uploadFacultyStudents(rosterFile);
       setRosterResult(res);
       setRosterFile(null);
-      await loadCourseRoster(selectedCourseId);
+      await loadMyCourses();
     } catch (e) {
-      alert(e?.response?.data?.detail || 'Roster upload failed.');
+      alert(e?.response?.data?.detail || 'Student upload failed.');
     } finally {
       setRosterLoading(false);
     }
@@ -288,7 +274,7 @@ const Chat = () => {
   const canUpload =
     user?.role === 'faculty' &&
     targetRoles.length > 0 &&
-    (!targetRoles.includes('student') || !!selectedCourseId);
+    (!targetRoles.includes('student') || selectedCourseIds.length > 0);
 
   const onDrop = async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
@@ -298,13 +284,13 @@ const Chat = () => {
       return;
     }
 
-    if (user.role === 'faculty' && targetRoles.includes('student') && !selectedCourseId) {
-      alert('Please select a course when uploading materials for students.');
+    if (user.role === 'faculty' && targetRoles.includes('student') && selectedCourseIds.length === 0) {
+      alert('Select a level and at least one course when uploading for students.');
       return;
     }
 
-    const course = myCourses.find((c) => String(c.id) === String(selectedCourseId));
-    const specForUpload = course?.specialization || selectedSpecialization;
+    const firstCourse = myCourses.find((c) => String(c.id) === String(selectedCourseIds[0]));
+    const specForUpload = firstCourse?.specialization || selectedSpecialization;
 
     const newUploads = acceptedFiles.map(file => ({
       id: `local-${file.name}-${Date.now()}`,
@@ -313,7 +299,7 @@ const Chat = () => {
       error: null,
     }));
     setUploadingPDFs(prev => [...prev, ...newUploads]);
-    setActiveTab('files');
+    setActiveTab('materials');
     setUploadingFile(true);
 
     try {
@@ -324,7 +310,9 @@ const Chat = () => {
             file,
             targetRoles,
             specForUpload,
-            targetRoles.includes('student') ? Number(selectedCourseId) : null
+            null,
+            targetRoles.includes('student') ? selectedCourseIds.map(Number) : null,
+            targetRoles.includes('student') ? (uploadLevel || null) : null
           );
           setUploadingPDFs(prev => prev.map(f =>
             f.name === file.name && f.status === 'Uploading & indexing...'
@@ -521,13 +509,17 @@ const Chat = () => {
           <button className="sidebar-button" onClick={() => setActiveTab('chat')} title="Home">
             <Home size={18} />{sidebarOpen && ' Home'}
           </button>
-          {/* Show upload file button for faculty only */}
           {user?.role === 'faculty' && (
-            <button className="sidebar-button" onClick={() => setActiveTab('files')} title="Course setup">
-              <Upload size={18} />{sidebarOpen && ' Course Setup'}
+            <button className="sidebar-button" onClick={() => setActiveTab('files')} title="Upload Students">
+              <Users size={18} />{sidebarOpen && ' Upload Students'}
             </button>
           )}
-          {/* Show courses platform button */}
+          {user?.role === 'faculty' && (
+            <button className="sidebar-button" onClick={() => setActiveTab('materials')} title="Upload Materials">
+              <Upload size={18} />{sidebarOpen && ' Upload Materials'}
+            </button>
+          )}
+          {/* My Courses = separate platform */}
           {user?.role === 'faculty' && (
             <button className="sidebar-button" onClick={() => navigate('/courses/faculty')} title="Courses">
               <BookOpen size={18} />{sidebarOpen && ' My Courses'}
@@ -554,12 +546,30 @@ const Chat = () => {
           >
             <MessageSquare size={16} /> Chat
           </button>
-          <button
-            className={`tab-button ${activeTab === 'files' ? 'active' : ''}`}
-            onClick={() => setActiveTab('files')}
-          >
-            <File size={16} /> Course Setup
-          </button>
+          {user?.role === 'faculty' && (
+            <button
+              className={`tab-button ${activeTab === 'files' ? 'active' : ''}`}
+              onClick={() => setActiveTab('files')}
+            >
+              <Users size={16} /> Upload Students
+            </button>
+          )}
+          {user?.role === 'faculty' && (
+            <button
+              className={`tab-button ${activeTab === 'materials' ? 'active' : ''}`}
+              onClick={() => setActiveTab('materials')}
+            >
+              <Upload size={16} /> Upload Materials
+            </button>
+          )}
+          {user?.role === 'student' && (
+            <button
+              className={`tab-button ${activeTab === 'materials' ? 'active' : ''}`}
+              onClick={() => setActiveTab('materials')}
+            >
+              <File size={16} /> My Files
+            </button>
+          )}
         </div>
 
         {/* Chat Tab Content */}
@@ -647,137 +657,106 @@ const Chat = () => {
           </div>
         )}
 
-        {/* Files Tab Content */}
-        {activeTab === 'files' && (
+        {/* Upload Students Tab */}
+        {activeTab === 'files' && user?.role === 'faculty' && (
           <div className="files-content">
-            {user.role === 'faculty' && (
-              <>
-                <div className="roster-upload-panel">
-                  <div className="roster-panel-head">
-                    <Users size={22} />
-                    <div>
-                      <h3>Upload Section Students</h3>
-                      <p>Excel with student IDs from the admin master list · ملف الطلاب</p>
-                    </div>
-                  </div>
+            <div className="roster-upload-panel">
+              <div className="roster-panel-head">
+                <Users size={22} />
+                <div>
+                  <h3>Upload Students</h3>
+                  <p>Excel: الرقم الجامعي · المستوى · المقررات (IDs) — students must already exist from admin</p>
+                </div>
+              </div>
 
-                  <div className="roster-panel-body">
-                    <div className="roster-field">
-                      <label htmlFor="roster-course-select">Course *</label>
-                      <select
-                        id="roster-course-select"
-                        className="spec-select"
-                        value={selectedCourseId}
-                        onChange={(e) => {
-                          setSelectedCourseId(e.target.value);
-                          setRosterResult(null);
-                          const c = myCourses.find((x) => String(x.id) === e.target.value);
-                          if (c) setSelectedSpecialization(c.specialization);
-                        }}
-                      >
-                        <option value="">Select course</option>
-                        {myCourses.map((c) => (
-                          <option key={c.id} value={c.id}>{c.title}</option>
-                        ))}
-                      </select>
-                      {myCourses.length === 0 && (
-                        <small className="field-hint warn">
-                          Create a course first from My Courses.
-                        </small>
-                      )}
-                    </div>
+              <div className="roster-panel-body">
+                {myCourses.length === 0 && (
+                  <small className="field-hint warn">
+                    Create courses with a Level in My Courses first, then use their IDs in the Excel.
+                  </small>
+                )}
 
-                    <div className="roster-field">
-                      <label htmlFor="roster-section">Default section (optional)</label>
-                      <input
-                        id="roster-section"
-                        type="text"
-                        className="spec-select"
-                        value={rosterSectionNumber}
-                        onChange={(e) => setRosterSectionNumber(e.target.value)}
-                        placeholder="e.g. 101"
-                      />
-                    </div>
-
-                    <div className="roster-example-mini">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>الرقم الجامعي</th>
-                            <th>رقم الشعبة</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {ROSTER_TEMPLATE_ROWS.map((row, i) => (
-                            <tr key={i}>
-                              <td>{row[0]}</td>
-                              <td>{row[1]}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <div className="roster-actions">
-                      <button type="button" className="roster-template-btn" onClick={downloadRosterTemplate}>
-                        <FileSpreadsheet size={16} /> Download template
-                      </button>
-                      <label className="roster-file-picker">
-                        <input
-                          type="file"
-                          accept=".xlsx,.xls"
-                          onChange={(e) => {
-                            setRosterFile(e.target.files?.[0] || null);
-                            setRosterResult(null);
-                          }}
-                        />
-                        {rosterFile ? rosterFile.name : 'Choose Excel file (.xlsx)'}
-                      </label>
-                      <button
-                        type="button"
-                        className="roster-upload-btn"
-                        disabled={!rosterFile || !selectedCourseId || rosterLoading}
-                        onClick={handleRosterUpload}
-                      >
-                        {rosterLoading ? 'Uploading…' : 'Upload & Link Students'}
-                      </button>
-                    </div>
-
-                    {rosterResult && (
-                      <div className="roster-result-box">
-                        Linked <strong>{rosterResult.linked}</strong> · Skipped <strong>{rosterResult.skipped}</strong>
-                        {rosterResult.errors?.length > 0 && (
-                          <ul>
-                            {rosterResult.errors.map((err, i) => (
-                              <li key={i}>
-                                Row {err.row}: {err.reason}
-                                {err.university_id ? ` (${err.university_id})` : ''}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="roster-enrolled">
-                      <strong>Enrolled in this course: {rosterList.length}</strong>
-                      {rosterList.length > 0 && (
-                        <ul>
-                          {rosterList.map((r) => (
-                            <li key={r.id}>
-                              {r.university_id || r.student_id} — {r.student_name || 'Student'}
-                              {r.section_number ? ` · Section ${r.section_number}` : ''}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </div>
+                <div className="roster-example-mini">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>الرقم الجامعي</th>
+                        <th>المستوى</th>
+                        <th>المقررات</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {STUDENT_ASSIGN_TEMPLATE_ROWS.map((row, i) => (
+                        <tr key={i}>
+                          <td>{row[0]}</td>
+                          <td>{row[1]}</td>
+                          <td>{row[2]}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {myCourses.length > 0 && (
+                    <p className="field-hint" style={{ marginTop: 8 }}>
+                      Your course IDs:{' '}
+                      {myCourses.map((c) => `${c.id}=${c.title}${c.level ? ` (L${c.level})` : ''}`).join(' · ')}
+                    </p>
+                  )}
                 </div>
 
-                <div className="upload-section">
-                  <h3>Upload Course Materials</h3>
-                  <p className="upload-subtitle">PDF files for the AI tutor · after linking students</p>
+                <div className="roster-actions">
+                  <button type="button" className="roster-template-btn" onClick={downloadRosterTemplate}>
+                    <FileSpreadsheet size={16} /> Download template
+                  </button>
+                  <label className="roster-file-picker">
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      onChange={(e) => {
+                        setRosterFile(e.target.files?.[0] || null);
+                        setRosterResult(null);
+                      }}
+                    />
+                    {rosterFile ? rosterFile.name : 'Choose Excel file (.xlsx)'}
+                  </label>
+                  <button
+                    type="button"
+                    className="roster-upload-btn"
+                    disabled={!rosterFile || rosterLoading}
+                    onClick={handleRosterUpload}
+                  >
+                    {rosterLoading ? 'Uploading…' : 'Upload & Link Students'}
+                  </button>
+                </div>
+
+                {rosterResult && (
+                  <div className="roster-result-box">
+                    Linked <strong>{rosterResult.linked}</strong> · Skipped <strong>{rosterResult.skipped}</strong>
+                    {rosterResult.errors?.length > 0 && (
+                      <ul>
+                        {rosterResult.errors.map((err, i) => (
+                          <li key={i}>
+                            Row {err.row}: {err.reason}
+                            {err.university_id ? ` (${err.university_id})` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Upload Materials / My Files Tab */}
+        {activeTab === 'materials' && (
+          <div className="files-content">
+            {user.role === 'faculty' && (
+              <div className="upload-section">
+                <h3>Upload Materials</h3>
+                <p className="upload-subtitle">
+                  Students: pick level → select one or more courses. Or Faculty only. Or both.
+                </p>
 
                 <div className="upload-steps">
                   <div className={`upload-step ${targetRoles.length > 0 ? 'done' : 'current'}`}>
@@ -798,7 +777,8 @@ const Chat = () => {
                                   : [...targetRoles, role.value];
                                 setTargetRoles(newRoles);
                                 if (!newRoles.includes('student')) {
-                                  setSelectedSpecialization('');
+                                  setSelectedCourseIds([]);
+                                  setUploadLevel('');
                                 }
                               }}
                             >
@@ -814,33 +794,73 @@ const Chat = () => {
                   </div>
 
                   {targetRoles.includes('student') && (
-                    <div className={`upload-step ${selectedCourseId ? 'done' : 'current'}`}>
+                    <div className={`upload-step ${uploadLevel ? 'done' : 'current'}`}>
                       <span className="step-num">2</span>
                       <div className="step-body">
-                        <label className="step-label">Course *</label>
+                        <label className="step-label">Level *</label>
                         <select
                           className="spec-select"
-                          value={selectedCourseId}
+                          value={uploadLevel}
                           onChange={(e) => {
-                            setSelectedCourseId(e.target.value);
-                            const c = myCourses.find((x) => String(x.id) === e.target.value);
-                            if (c) setSelectedSpecialization(c.specialization);
+                            setUploadLevel(e.target.value);
+                            setSelectedCourseIds([]);
                           }}
                         >
-                          <option value="">Select course</option>
-                          {myCourses.map((c) => (
-                            <option key={c.id} value={c.id}>{c.title}</option>
+                          <option value="">Select level</option>
+                          {courseLevels.map((lv) => (
+                            <option key={lv} value={lv}>Level {lv}</option>
                           ))}
                         </select>
-                        {!selectedCourseId && (
-                          <small className="field-hint warn">Materials are indexed for enrolled students in this course only.</small>
+                        {courseLevels.length === 0 && (
+                          <small className="field-hint warn">
+                            Set a Level on your courses in My Courses first.
+                          </small>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {targetRoles.includes('student') && (
+                    <div className={`upload-step ${selectedCourseIds.length ? 'done' : 'current'}`}>
+                      <span className="step-num">3</span>
+                      <div className="step-body">
+                        <label className="step-label">Courses * (multi-select)</label>
+                        <div className="role-chips">
+                          {coursesForUploadLevel.map((c) => {
+                            const selected = selectedCourseIds.includes(String(c.id));
+                            return (
+                              <button
+                                type="button"
+                                key={c.id}
+                                className={`role-chip ${selected ? 'selected' : ''}`}
+                                onClick={() => {
+                                  setSelectedCourseIds((prev) =>
+                                    selected
+                                      ? prev.filter((id) => id !== String(c.id))
+                                      : [...prev, String(c.id)]
+                                  );
+                                  if (c.specialization) setSelectedSpecialization(c.specialization);
+                                }}
+                              >
+                                {c.title} (#{c.id})
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {uploadLevel && coursesForUploadLevel.length === 0 && (
+                          <small className="field-hint warn">No courses for this level.</small>
+                        )}
+                        {!selectedCourseIds.length && (
+                          <small className="field-hint warn">
+                            Only enrolled students in the selected courses can see or ask about this PDF.
+                          </small>
                         )}
                       </div>
                     </div>
                   )}
 
                   <div className={`upload-step ${canUpload ? 'current' : 'locked'}`}>
-                    <span className="step-num">{targetRoles.includes('student') ? '3' : '2'}</span>
+                    <span className="step-num">{targetRoles.includes('student') ? '4' : '2'}</span>
                     <div className="step-body">
                       <label className="step-label">Upload PDF</label>
                       <div
@@ -865,8 +885,7 @@ const Chat = () => {
                     </div>
                   </div>
                 </div>
-                </div>
-              </>
+              </div>
             )}
             <div className="files-list">
               <h3>Documents ({mergedPDFs.length})</h3>
@@ -890,6 +909,7 @@ const Chat = () => {
                           <div className="file-row-title">{file.name || file.original_filename}</div>
                           <div className="file-row-meta">
                             {file.file_size ? <span>{formatFileSize(file.file_size)}</span> : null}
+                            {file.level ? <span>Level {file.level}</span> : null}
                             {file.specialization ? <span>{file.specialization}</span> : null}
                             {file.upload_time ? <span>{formatDate(file.upload_time)}</span> : null}
                           </div>

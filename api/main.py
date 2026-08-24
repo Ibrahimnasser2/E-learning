@@ -54,6 +54,7 @@ try:
         CourseEnrollmentRequest, CourseEnrollmentResponse,
         AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
         AdminUploadUsersResponse, CourseRosterUploadResponse,
+        FacultyStudentsUploadResponse,
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
@@ -79,6 +80,7 @@ except ImportError:
         CourseEnrollmentRequest, CourseEnrollmentResponse,
         AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
         AdminUploadUsersResponse, CourseRosterUploadResponse,
+        FacultyStudentsUploadResponse,
     )
     from api.rag_manager_simple import RAGManagerPGVector
 
@@ -928,6 +930,8 @@ async def send_message(
             allowed_sources = _student_allowed_paths_for_course(
                 db, current_user.id, message_data.course_id
             )
+        elif current_user.role == "faculty":
+            allowed_sources = _faculty_allowed_paths(db, current_user.id)
 
         # Chat never indexes — indexing happens only at upload time.
         context_texts = []
@@ -1123,6 +1127,8 @@ async def send_message_stream(
         allowed_sources = _student_allowed_paths_for_course(
             db, current_user.id, message_data.course_id
         )
+    elif current_user.role == RoleEnum.faculty:
+        allowed_sources = _faculty_allowed_paths(db, current_user.id)
 
     context_texts = []
     try:
@@ -1229,30 +1235,48 @@ async def upload_file(
     target_roles: str = Form(...),  # Accept as string, parse as JSON
     specialization: str = Form(None),  # Specialization for students (optional)
     course_id: int = Form(None),
+    course_ids: str = Form(None),  # JSON list of course IDs (multi-select)
+    level: str = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     import json
     target_roles = json.loads(target_roles)
     allowed_roles = ["faculty", "student"]
-    # تحقق من صلاحيات الرفع حسب الدور
-    if current_user.role == "faculty":
-        # Faculty can upload for students (public) or faculty (private)
-        if not isinstance(target_roles, list) or not target_roles or not all(r in allowed_roles for r in target_roles):
-            raise HTTPException(status_code=400, detail="Invalid target roles")
-        # If uploading for students, specialization is required
-        if "student" in target_roles:
-            if not course_id:
+    if current_user.role != "faculty":
+        raise HTTPException(status_code=403, detail="You do not have permission to upload files")
+    if not isinstance(target_roles, list) or not target_roles or not all(r in allowed_roles for r in target_roles):
+        raise HTTPException(status_code=400, detail="Invalid target roles")
+
+    resolved_course_ids = []
+    if course_ids:
+        try:
+            parsed = json.loads(course_ids) if isinstance(course_ids, str) else course_ids
+            if isinstance(parsed, list):
+                resolved_course_ids = [int(x) for x in parsed if str(x).strip()]
+        except Exception:
+            raise HTTPException(status_code=400, detail="course_ids must be a JSON list of integers")
+    elif course_id:
+        resolved_course_ids = [int(course_id)]
+
+    if "student" in target_roles:
+        if not resolved_course_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Select at least one course when uploading materials for students.",
+            )
+        owned = []
+        for cid in resolved_course_ids:
+            owned.append(_get_owned_course(cid, current_user, db))
+        if level:
+            mismatch = [c.title for c in owned if c.level and str(c.level) != str(level)]
+            if mismatch:
                 raise HTTPException(
                     status_code=400,
-                    detail="course_id is required when uploading materials for students. Select a course first.",
+                    detail=f"Courses not in level {level}: {', '.join(mismatch)}",
                 )
-            course_obj = _get_owned_course(int(course_id), current_user, db)
-            specialization = specialization or course_obj.specialization
-        elif "student" in target_roles and not specialization:
-            raise HTTPException(status_code=400, detail="Specialization is required when uploading for students")
-    else:
-        raise HTTPException(status_code=403, detail="You do not have permission to upload files")
+        specialization = specialization or owned[0].specialization
+
     if not file or not getattr(file, 'filename', None):
         raise HTTPException(status_code=400, detail="No file provided")
     if file.filename is None:
@@ -1261,21 +1285,23 @@ async def upload_file(
     unique_filename = f"{uuid.uuid4()}{file_extension}"
     file_path = os.path.join(UPLOADS_DIR, unique_filename)
     try:
-        # Read file once into memory for disk + durable DB storage
         file_bytes = await file.read()
         if not file_bytes:
             raise HTTPException(status_code=400, detail="Empty file")
         with open(file_path, "wb") as buffer:
             buffer.write(file_bytes)
-        # Ensure file exists before proceeding
         if not os.path.exists(file_path):
             raise HTTPException(status_code=500, detail="File not found after upload.")
+
+        primary_course_id = resolved_course_ids[0] if resolved_course_ids else None
         db_file = UploadedFile(
             user_id=current_user.id,
             uploader_id=current_user.id,
             target_roles=target_roles,
             specialization=specialization if "student" in target_roles else None,
-            course_id=int(course_id) if course_id else None,
+            course_id=primary_course_id,
+            course_ids=resolved_course_ids or None,
+            level=str(level).strip() if level else None,
             filename=unique_filename,
             original_filename=file.filename,
             file_size=len(file_bytes),
@@ -1286,18 +1312,17 @@ async def upload_file(
         db.commit()
         db.refresh(db_file)
 
-        # --- Begin: Index at upload time (chat will never index) ---
         global rag_manager
         if rag_manager is None:
             raise HTTPException(status_code=503, detail="RAG manager is not ready")
         file_paths = [file_path]
-        print(f"📤 Uploading file for roles: {target_roles}, specialization: {specialization}")
+        print(f"📤 Uploading file for roles={target_roles} courses={resolved_course_ids} level={level}")
         indexed_user_ids = set()
         documents = rag_manager.load_documents(file_paths=file_paths)
         if not documents:
             raise HTTPException(status_code=400, detail="Could not read document content for indexing")
 
-        # Always index for the uploader (faculty)
+        # Always index for the uploader only among faculty (no cross-faculty leak)
         try:
             rag_manager.index_documents(documents, current_user.id, file_paths)
             indexed_user_ids.add(current_user.id)
@@ -1309,40 +1334,27 @@ async def upload_file(
                 detail=f"Upload saved but indexing failed: {rag_manager._friendly_openai_error(e)}",
             )
 
-        for role in target_roles:
-            if role == "student" and course_id:
-                enrollment_rows = db.query(CourseEnrollment).filter(
-                    CourseEnrollment.course_id == int(course_id)
-                ).all()
-                upload_time = db_file.upload_time
-                users = [
-                    db.query(User).filter(User.id == e.student_id).first()
-                    for e in enrollment_rows
-                    if e.enrolled_at <= upload_time
-                ]
-                users = [u for u in users if u]
-                print(f"👥 Indexing for {len(users)} enrolled students in course {course_id}")
-            elif role == "student" and specialization:
-                users = db.query(User).filter(
-                    User.role == role,
-                    User.specialization == specialization,
-                ).all()
-                print(f"👥 Found {len(users)} students with specialization '{specialization}'")
-            else:
-                users = db.query(User).filter(User.role == role).all()
-                print(f"👥 Found {len(users)} users with role '{role}'")
+        # Index enrolled students only — never other faculty
+        if "student" in target_roles and resolved_course_ids:
+            enrollment_rows = db.query(CourseEnrollment).filter(
+                CourseEnrollment.course_id.in_(resolved_course_ids)
+            ).all()
+            upload_time = db_file.upload_time
+            student_ids = set()
+            for e in enrollment_rows:
+                if e.enrolled_at <= upload_time:
+                    student_ids.add(e.student_id)
+            users = db.query(User).filter(User.id.in_(list(student_ids))).all() if student_ids else []
+            print(f"👥 Indexing for {len(users)} enrolled students in courses {resolved_course_ids}")
             for user in users:
                 if user.id in indexed_user_ids:
                     continue
                 try:
-                    print(f"📚 Indexing document for user {user.id} ({user.username})")
                     rag_manager.index_documents(documents, user.id, file_paths)
                     indexed_user_ids.add(user.id)
-                    print(f"✅ Indexed documents for user {user.id}")
+                    print(f"✅ Indexed for student {user.id}")
                 except Exception as e:
-                    # Soft-fail per user so one failure does not break the whole upload
                     print(f"⚠️ Indexing failed for user {user.id}: {e}")
-        # --- End: Index at upload time ---
 
         return FileUploadResponse.from_orm(db_file)
     except HTTPException:
@@ -1357,15 +1369,19 @@ async def get_user_files(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    files_query = db.query(UploadedFile).filter(
-        UploadedFile.target_roles.isnot(None),
-        UploadedFile.target_roles.contains([current_user.role])
-    )
-    
-    # Filter by course enrollment + upload date for students
-    if current_user.role == "student":
-        files_query = files_query.filter(_student_files_access_filter(db, current_user.id))
-    
+    if current_user.role == "faculty":
+        # Faculty only see their own uploads — no other faculty data
+        files_query = db.query(UploadedFile).filter(
+            UploadedFile.uploader_id == current_user.id
+        )
+    elif current_user.role == "student":
+        files_query = db.query(UploadedFile).filter(
+            UploadedFile.target_roles.contains(["student"]),
+            _student_files_access_filter(db, current_user.id),
+        )
+    else:
+        files_query = db.query(UploadedFile).filter(UploadedFile.id == -1)
+
     files = (
         files_query
         .options(defer(UploadedFile.file_content))
@@ -1392,11 +1408,8 @@ async def download_file(
     # Check if user has access to this file
     has_access = False
     if current_user.role == "faculty":
-        # Faculty can access files targeted to faculty or students
-        has_access = (
-            "faculty" in file_record.target_roles or 
-            "student" in file_record.target_roles
-        )
+        # Faculty only download their own uploads
+        has_access = file_record.uploader_id == current_user.id
     elif current_user.role == "student":
         has_access = _student_can_download_file(db, current_user, file_record)
     
@@ -1734,7 +1747,12 @@ def _reindex_course_materials_for_students(db: Session, course_id: int, student_
     global rag_manager
     if not rag_manager or not student_user_ids:
         return 0
-    files = db.query(UploadedFile).filter(UploadedFile.course_id == course_id).all()
+    files = db.query(UploadedFile).filter(
+        or_(
+            UploadedFile.course_id == course_id,
+            UploadedFile.course_ids.contains([course_id]),
+        )
+    ).all()
     total = 0
     for student_id in student_user_ids:
         enrollment = db.query(CourseEnrollment).filter(
@@ -1774,14 +1792,27 @@ def _student_enrolled_course_ids(db: Session, student_id: int) -> list:
     return [r[0] for r in rows]
 
 
+def _file_attached_course_ids(db_file: UploadedFile) -> list:
+    ids = []
+    if db_file.course_ids and isinstance(db_file.course_ids, list):
+        ids.extend(int(x) for x in db_file.course_ids)
+    if db_file.course_id is not None:
+        ids.append(int(db_file.course_id))
+    return list(dict.fromkeys(ids))
+
+
+def _file_covers_course(db_file: UploadedFile, course_id: int) -> bool:
+    return int(course_id) in _file_attached_course_ids(db_file)
+
+
 def _uploaded_file_disk_path(db_file: UploadedFile) -> str:
     return os.path.join(UPLOADS_DIR, db_file.filename)
 
 
 def _student_files_access_filter(db: Session, student_id: int):
     """
-    Students only see course PDFs uploaded AFTER their enrollment date.
-    Level 1 vs Level 2 = separate courses — no cross-course access.
+    Students only see PDFs for courses they are enrolled in,
+    uploaded AFTER their enrollment date. No cross-course / cross-level leak.
     """
     enrollments = db.query(CourseEnrollment).filter(
         CourseEnrollment.student_id == student_id
@@ -1792,16 +1823,19 @@ def _student_files_access_filter(db: Session, student_id: int):
     for en in enrollments:
         clauses.append(
             and_(
-                UploadedFile.course_id == en.course_id,
                 UploadedFile.upload_time >= en.enrolled_at,
                 UploadedFile.target_roles.contains(["student"]),
+                or_(
+                    UploadedFile.course_id == en.course_id,
+                    UploadedFile.course_ids.contains([en.course_id]),
+                ),
             )
         )
     return or_(*clauses)
 
 
 def _student_allowed_paths_for_course(db: Session, student_id: int, course_id: int) -> list:
-    """Disk paths this student may use in RAG for a given course."""
+    """Disk paths this student may use in RAG for a given course — nothing else."""
     enrollment = db.query(CourseEnrollment).filter(
         CourseEnrollment.student_id == student_id,
         CourseEnrollment.course_id == course_id,
@@ -1809,9 +1843,12 @@ def _student_allowed_paths_for_course(db: Session, student_id: int, course_id: i
     if not enrollment:
         return []
     files = db.query(UploadedFile).filter(
-        UploadedFile.course_id == course_id,
         UploadedFile.upload_time >= enrollment.enrolled_at,
         UploadedFile.target_roles.contains(["student"]),
+        or_(
+            UploadedFile.course_id == course_id,
+            UploadedFile.course_ids.contains([course_id]),
+        ),
     ).all()
     return [_uploaded_file_disk_path(f) for f in files if f.filename]
 
@@ -1819,15 +1856,44 @@ def _student_allowed_paths_for_course(db: Session, student_id: int, course_id: i
 def _student_can_download_file(db: Session, student: User, file_record: UploadedFile) -> bool:
     if "student" not in (file_record.target_roles or []):
         return False
-    if not file_record.course_id:
+    attached = _file_attached_course_ids(file_record)
+    if not attached:
         return False
-    enrollment = db.query(CourseEnrollment).filter(
-        CourseEnrollment.student_id == student.id,
-        CourseEnrollment.course_id == file_record.course_id,
-    ).first()
-    if not enrollment:
-        return False
-    return file_record.upload_time >= enrollment.enrolled_at
+    for cid in attached:
+        enrollment = db.query(CourseEnrollment).filter(
+            CourseEnrollment.student_id == student.id,
+            CourseEnrollment.course_id == cid,
+        ).first()
+        if enrollment and file_record.upload_time >= enrollment.enrolled_at:
+            return True
+    return False
+
+
+def _faculty_allowed_paths(db: Session, faculty_id: int) -> list:
+    """Faculty RAG may only use files they uploaded themselves."""
+    files = db.query(UploadedFile).filter(
+        UploadedFile.uploader_id == faculty_id
+    ).all()
+    return [_uploaded_file_disk_path(f) for f in files if f.filename]
+
+
+def _course_to_response(course, faculty_name=None, enrollment_count=0) -> CourseResponse:
+    return CourseResponse(
+        id=course.id,
+        title=course.title,
+        description=course.description,
+        specialization=course.specialization,
+        level=getattr(course, "level", None),
+        faculty_id=course.faculty_id,
+        faculty_name=faculty_name,
+        created_at=course.created_at,
+        updated_at=course.updated_at,
+        is_active=course.is_active,
+        course_url=course.course_url,
+        course_type=course.course_type,
+        thumbnail_url=course.thumbnail_url,
+        enrollment_count=enrollment_count,
+    )
 
 
 # ==================== Course Management Endpoints ====================
@@ -1858,6 +1924,7 @@ async def create_course(
         title=course_data.title,
         description=course_data.description,
         specialization=course_data.specialization,
+        level=str(course_data.level).strip() if course_data.level else None,
         faculty_id=current_user.id,
         course_url=course_data.course_url,
         course_type=course_data.course_type or "internal",
@@ -1868,24 +1935,7 @@ async def create_course(
     db.commit()
     db.refresh(db_course)
     
-    # إضافة اسم عضو هيئة التدريس
-    course_response = CourseResponse(
-        id=db_course.id,
-        title=db_course.title,
-        description=db_course.description,
-        specialization=db_course.specialization,
-        faculty_id=db_course.faculty_id,
-        faculty_name=current_user.username,
-        created_at=db_course.created_at,
-        updated_at=db_course.updated_at,
-        is_active=db_course.is_active,
-        course_url=db_course.course_url,
-        course_type=db_course.course_type,
-        thumbnail_url=db_course.thumbnail_url,
-        enrollment_count=0
-    )
-    
-    return course_response
+    return _course_to_response(db_course, faculty_name=current_user.username, enrollment_count=0)
 
 @app.get("/courses/my-courses", response_model=CourseListResponse)
 async def get_my_courses(
@@ -1924,20 +1974,10 @@ async def get_my_courses(
         faculty = db.query(User).filter(User.id == course.faculty_id).first()
         faculty_name = faculty.username if faculty else "Unknown"
         
-        course_responses.append(CourseResponse(
-            id=course.id,
-            title=course.title,
-            description=course.description,
-            specialization=course.specialization,
-            faculty_id=course.faculty_id,
+        course_responses.append(_course_to_response(
+            course,
             faculty_name=faculty_name,
-            created_at=course.created_at,
-            updated_at=course.updated_at,
-            is_active=course.is_active,
-            course_url=course.course_url,
-            course_type=course.course_type,
-            thumbnail_url=course.thumbnail_url,
-            enrollment_count=enrollment_count
+            enrollment_count=enrollment_count,
         ))
     
     return CourseListResponse(courses=course_responses, total=len(course_responses))
@@ -1969,20 +2009,10 @@ async def get_my_enrollments(
                 CourseEnrollment.course_id == course.id
             ).count()
             
-            course_response = CourseResponse(
-                id=course.id,
-                title=course.title,
-                description=course.description,
-                specialization=course.specialization,
-                faculty_id=course.faculty_id,
+            course_response = _course_to_response(
+                course,
                 faculty_name=faculty.username if faculty else "Unknown",
-                created_at=course.created_at,
-                updated_at=course.updated_at,
-                is_active=course.is_active,
-                course_url=course.course_url,
-                course_type=course.course_type,
-                thumbnail_url=course.thumbnail_url,
-                enrollment_count=enrollment_count
+                enrollment_count=enrollment_count,
             )
             enrollment_responses.append(CourseEnrollmentResponse(
                 id=enrollment.id,
@@ -1991,6 +2021,7 @@ async def get_my_enrollments(
                 enrolled_at=enrollment.enrolled_at,
                 progress=enrollment.progress,
                 section_number=enrollment.section_number,
+                level=getattr(enrollment, "level", None),
                 course=course_response
             ))
     
@@ -2012,9 +2043,8 @@ async def get_course(
             detail="Course not found"
         )
     
-    # التحقق من الصلاحيات
     if current_user.role == "student":
-        if course.specialization != current_user.specialization:
+        if not _student_enrolled_in_course(db, current_user.id, course.id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have access to this course"
@@ -2033,21 +2063,7 @@ async def get_course(
     faculty = db.query(User).filter(User.id == course.faculty_id).first()
     faculty_name = faculty.username if faculty else "Unknown"
     
-    return CourseResponse(
-        id=course.id,
-        title=course.title,
-        description=course.description,
-        specialization=course.specialization,
-        faculty_id=course.faculty_id,
-        faculty_name=faculty_name,
-        created_at=course.created_at,
-        updated_at=course.updated_at,
-        is_active=course.is_active,
-        course_url=course.course_url,
-        course_type=course.course_type,
-        thumbnail_url=course.thumbnail_url,
-        enrollment_count=enrollment_count
-    )
+    return _course_to_response(course, faculty_name=faculty_name, enrollment_count=enrollment_count)
 
 @app.put("/courses/{course_id}", response_model=CourseResponse)
 async def update_course(
@@ -2085,6 +2101,8 @@ async def update_course(
         course.description = course_data.description
     if course_data.specialization is not None:
         course.specialization = course_data.specialization
+    if course_data.level is not None:
+        course.level = str(course_data.level).strip() or None
     if course_data.course_url is not None:
         course.course_url = course_data.course_url
     if course_data.is_active is not None:
@@ -2107,20 +2125,10 @@ async def update_course(
         CourseEnrollment.course_id == course.id
     ).count()
     
-    return CourseResponse(
-        id=course.id,
-        title=course.title,
-        description=course.description,
-        specialization=course.specialization,
-        faculty_id=course.faculty_id,
+    return _course_to_response(
+        course,
         faculty_name=current_user.username,
-        created_at=course.created_at,
-        updated_at=course.updated_at,
-        is_active=course.is_active,
-        course_url=course.course_url,
-        course_type=course.course_type,
-        thumbnail_url=course.thumbnail_url,
-        enrollment_count=enrollment_count
+        enrollment_count=enrollment_count,
     )
 
 @app.delete("/courses/{course_id}")
@@ -2296,6 +2304,160 @@ async def upload_course_roster(
         errors=errors,
         reindexed_students=reindexed,
     )
+
+
+FACULTY_STUDENT_LEVEL_COLUMNS = (
+    "Level", "المستوى", "level", "Level Number", "المستوي",
+)
+FACULTY_STUDENT_COURSE_COLUMNS = (
+    "Course IDs", "Course ID", "المقررات", "مقررات", "course_ids", "courses",
+)
+
+
+def _parse_course_ids_cell(raw) -> list:
+    if raw is None:
+        return []
+    text = str(raw).strip()
+    if not text or text.lower() == "nan":
+        return []
+    parts = re.split(r"[,|;\s]+", text)
+    ids = []
+    for p in parts:
+        p = p.strip()
+        if p.endswith(".0") and p[:-2].isdigit():
+            p = p[:-2]
+        if p.isdigit():
+            ids.append(int(p))
+    return list(dict.fromkeys(ids))
+
+
+@app.post("/faculty/upload-students", response_model=FacultyStudentsUploadResponse)
+async def faculty_upload_students(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Faculty uploads Excel: student ID + level + course IDs.
+    Links existing admin-provisioned students to the faculty's courses.
+    Does not create accounts.
+    """
+    if current_user.role != RoleEnum.faculty:
+        raise HTTPException(status_code=403, detail="Only faculty can upload student course assignments")
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
+
+    try:
+        df = pd.read_excel(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
+
+    columns = set(df.columns)
+    linked = 0
+    skipped = 0
+    errors = []
+    newly_by_course = {}  # course_id -> [student_ids]
+
+    owned_course_ids = {
+        c.id for c in db.query(Course).filter(Course.faculty_id == current_user.id).all()
+    }
+
+    for idx, row in df.iterrows():
+        row_num = int(idx) + 2
+        student_id_val = _roster_column(row, columns, ROSTER_ID_COLUMNS)
+        level_val = _roster_column(row, columns, FACULTY_STUDENT_LEVEL_COLUMNS)
+        course_ids_raw = _roster_column(row, columns, FACULTY_STUDENT_COURSE_COLUMNS)
+
+        if not student_id_val:
+            errors.append({"row": row_num, "reason": "Missing student ID"})
+            continue
+        if student_id_val.endswith(".0"):
+            stem = student_id_val[:-2]
+            if stem.isdigit():
+                student_id_val = stem
+
+        course_ids = _parse_course_ids_cell(course_ids_raw)
+        if not course_ids:
+            errors.append({
+                "row": row_num,
+                "university_id": student_id_val,
+                "reason": "Missing course IDs",
+            })
+            continue
+        if not level_val:
+            errors.append({
+                "row": row_num,
+                "university_id": student_id_val,
+                "reason": "Missing level",
+            })
+            continue
+
+        student = _find_student_by_university_id(db, student_id_val)
+        if not student:
+            errors.append({
+                "row": row_num,
+                "university_id": student_id_val,
+                "reason": "Student ID not found",
+            })
+            continue
+
+        student.level = str(level_val).strip()
+        row_linked = 0
+        for cid in course_ids:
+            if cid not in owned_course_ids:
+                errors.append({
+                    "row": row_num,
+                    "university_id": student_id_val,
+                    "reason": f"Course {cid} not found or not owned by you",
+                })
+                continue
+            course_obj = db.query(Course).filter(Course.id == cid).first()
+            if course_obj and course_obj.level and str(course_obj.level) != str(level_val).strip():
+                errors.append({
+                    "row": row_num,
+                    "university_id": student_id_val,
+                    "reason": f"Course {cid} is level {course_obj.level}, not {level_val}",
+                })
+                continue
+
+            existing = db.query(CourseEnrollment).filter(
+                CourseEnrollment.course_id == cid,
+                CourseEnrollment.student_id == student.id,
+            ).first()
+            if existing:
+                existing.level = str(level_val).strip()
+                skipped += 1
+                continue
+
+            db.add(CourseEnrollment(
+                student_id=student.id,
+                course_id=cid,
+                level=str(level_val).strip(),
+                progress=0,
+            ))
+            newly_by_course.setdefault(cid, []).append(student.id)
+            row_linked += 1
+            linked += 1
+
+        if row_linked == 0 and not any(e.get("row") == row_num for e in errors):
+            skipped += 1
+
+    if linked:
+        db.commit()
+    else:
+        db.rollback()
+
+    reindexed = 0
+    for cid, student_ids in newly_by_course.items():
+        reindexed += _reindex_course_materials_for_students(db, cid, student_ids)
+
+    return FacultyStudentsUploadResponse(
+        linked=linked,
+        skipped=skipped,
+        errors=errors,
+        reindexed_students=reindexed,
+    )
+
 
 if __name__ == "__main__":
     import uvicorn
