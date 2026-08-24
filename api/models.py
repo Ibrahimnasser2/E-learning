@@ -17,7 +17,7 @@ class UserRegister(BaseModel):
     specialization: Optional[str] = None  # التخصص (للطلاب)
 
 class UserLogin(BaseModel):
-    username: str
+    email: EmailStr
     password: str
 
 class UserResponse(BaseModel):

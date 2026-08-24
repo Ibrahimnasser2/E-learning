@@ -27,7 +27,7 @@ const Login = () => {
     setLoading(true);
     setError('');
 
-    const result = await login(data.username, data.password);
+    const result = await login(data.email, data.password);
 
     if (result.success) {
       const role = result.user?.role;
@@ -66,22 +66,22 @@ const Login = () => {
         <form onSubmit={handleSubmit(onSubmit)} className="auth-form">
           {/* حقل اسم المستخدم */}
           <div className="form-group">
-            <label htmlFor="username">Username</label>
+            <label htmlFor="email">Email</label>
             <input
-              type="text"
-              id="username"
-              {...register('username', {
-                required: 'Username is required',
-                minLength: {
-                  value: 3,
-                  message: 'Username must be at least 3 characters'
-                }
+              type="email"
+              id="email"
+              {...register('email', {
+                required: 'Email is required',
+                pattern: {
+                  value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+                  message: 'Enter a valid email address',
+                },
               })}
-              className={errors.username ? 'error' : ''}
-              placeholder="Enter your username"
+              className={errors.email ? 'error' : ''}
+              placeholder="Enter your university email"
             />
-            {errors.username && (
-              <span className="error-text">{errors.username.message}</span>
+            {errors.email && (
+              <span className="error-text">{errors.email.message}</span>
             )}
           </div>
 

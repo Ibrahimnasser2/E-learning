@@ -76,8 +76,11 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         )
     return current_user
 
-def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
-    user = db.query(User).filter(User.username == username).first()
+def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        return None
+    user = db.query(User).filter(User.email == normalized).first()
     if not user or not verify_password(password, user.password_hash):
         return None
     return user
