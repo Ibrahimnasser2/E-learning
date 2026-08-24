@@ -111,6 +111,7 @@ class Course(Base):
     description = Column(Text, nullable=True)
     specialization = Column(String(255), nullable=False, index=True)  # التخصص المطلوب للكورس
     level = Column(String(64), nullable=True, index=True)  # e.g. "1", "2"
+    course_code = Column(String(64), nullable=True, index=True)  # e.g. "2310 ويب"
     faculty_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -216,6 +217,9 @@ def create_tables():
             ))
             conn.execute(text(
                 "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS level VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE courses ADD COLUMN IF NOT EXISTS course_code VARCHAR(64)"
             ))
             conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_university_id "

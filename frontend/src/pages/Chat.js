@@ -25,9 +25,9 @@ import {
 } from 'lucide-react';
 
 const STUDENT_ASSIGN_TEMPLATE_ROWS = [
-  ['441234567', '1', '1,2'],
-  ['441234568', '1', '1'],
-  ['441234569', '2', '3,4'],
+  ['441234567', '1', '1001 انجل, 1202 تقن'],
+  ['441234568', '3', '2310 ويب'],
+  ['441234569', '5', '3510 ويب, 3511 ويب'],
 ];
 
 const Chat = () => {
@@ -69,7 +69,10 @@ const Chat = () => {
   const [selectedSpecialization, setSelectedSpecialization] = useState('');
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const [selectedCourseIds, setSelectedCourseIds] = useState([]);
+  const [selectedCourseCodes, setSelectedCourseCodes] = useState([]);
   const [uploadLevel, setUploadLevel] = useState('');
+  const [catalogLevels, setCatalogLevels] = useState([]);
+  const [catalogCourses, setCatalogCourses] = useState([]);
   const [myCourses, setMyCourses] = useState([]);
   const [rosterFile, setRosterFile] = useState(null);
   const [rosterLoading, setRosterLoading] = useState(false);
@@ -77,13 +80,17 @@ const Chat = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  const courseLevels = Array.from(
-    new Set((myCourses || []).map((c) => c.level).filter(Boolean).map(String))
-  ).sort();
+  const courseLevels = catalogLevels.length
+    ? catalogLevels
+    : Array.from(
+        new Set((myCourses || []).map((c) => c.level).filter(Boolean).map(String))
+      ).sort().map((id) => ({ id, label_ar: id, label_en: `Level ${id}` }));
 
-  const coursesForUploadLevel = uploadLevel
-    ? myCourses.filter((c) => String(c.level || '') === String(uploadLevel))
-    : myCourses;
+  const coursesForUploadLevel = catalogCourses.length
+    ? catalogCourses
+    : (uploadLevel
+        ? myCourses.filter((c) => String(c.level || '') === String(uploadLevel))
+        : myCourses);
 
   // التمرير التلقائي إلى الأسفل عند وصول رسائل جديدة
   const scrollToBottom = () => {
@@ -111,6 +118,27 @@ const Chat = () => {
       loadMyCourses();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (user?.role === 'faculty') {
+      courseAPI.getCatalogLevels()
+        .then((res) => setCatalogLevels(res.levels || []))
+        .catch((e) => console.error('catalog levels', e));
+    }
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (user?.role !== 'faculty' || !uploadLevel) {
+      setCatalogCourses([]);
+      return;
+    }
+    courseAPI.getCatalogCourses(uploadLevel)
+      .then((res) => setCatalogCourses(res.courses || []))
+      .catch((e) => {
+        console.error('catalog courses', e);
+        setCatalogCourses([]);
+      });
+  }, [user?.role, uploadLevel]);
 
   useEffect(() => {
     const cid = searchParams.get('courseId');
@@ -274,7 +302,7 @@ const Chat = () => {
   const canUpload =
     user?.role === 'faculty' &&
     targetRoles.length > 0 &&
-    (!targetRoles.includes('student') || selectedCourseIds.length > 0);
+    (!targetRoles.includes('student') || selectedCourseCodes.length > 0 || selectedCourseIds.length > 0);
 
   const onDrop = async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
@@ -284,13 +312,19 @@ const Chat = () => {
       return;
     }
 
-    if (user.role === 'faculty' && targetRoles.includes('student') && selectedCourseIds.length === 0) {
+    if (
+      user.role === 'faculty' &&
+      targetRoles.includes('student') &&
+      selectedCourseCodes.length === 0 &&
+      selectedCourseIds.length === 0
+    ) {
       alert('Select a level and at least one course when uploading for students.');
       return;
     }
 
+    const firstCatalog = catalogCourses.find((c) => selectedCourseCodes.includes(c.code));
     const firstCourse = myCourses.find((c) => String(c.id) === String(selectedCourseIds[0]));
-    const specForUpload = firstCourse?.specialization || selectedSpecialization;
+    const specForUpload = firstCatalog?.specialization || firstCourse?.specialization || selectedSpecialization;
 
     const newUploads = acceptedFiles.map(file => ({
       id: `local-${file.name}-${Date.now()}`,
@@ -311,8 +345,9 @@ const Chat = () => {
             targetRoles,
             specForUpload,
             null,
-            targetRoles.includes('student') ? selectedCourseIds.map(Number) : null,
-            targetRoles.includes('student') ? (uploadLevel || null) : null
+            selectedCourseCodes.length ? null : selectedCourseIds.map(Number),
+            targetRoles.includes('student') ? (uploadLevel || null) : null,
+            targetRoles.includes('student') && selectedCourseCodes.length ? selectedCourseCodes : null
           );
           setUploadingPDFs(prev => prev.map(f =>
             f.name === file.name && f.status === 'Uploading & indexing...'
@@ -665,7 +700,7 @@ const Chat = () => {
                 <Users size={22} />
                 <div>
                   <h3>Upload Students</h3>
-                  <p>Excel: الرقم الجامعي · المستوى · المقررات (IDs) — students must already exist from admin</p>
+                  <p>Excel: الرقم الجامعي · المستوى · المقررات (رموز مثل 2310 ويب) — الطلاب لازم يكونوا من رفع الإداري</p>
                 </div>
               </div>
 
@@ -778,6 +813,7 @@ const Chat = () => {
                                 setTargetRoles(newRoles);
                                 if (!newRoles.includes('student')) {
                                   setSelectedCourseIds([]);
+                                  setSelectedCourseCodes([]);
                                   setUploadLevel('');
                                 }
                               }}
@@ -797,52 +833,68 @@ const Chat = () => {
                     <div className={`upload-step ${uploadLevel ? 'done' : 'current'}`}>
                       <span className="step-num">2</span>
                       <div className="step-body">
-                        <label className="step-label">Level *</label>
+                        <label className="step-label">المستوى / Level *</label>
                         <select
                           className="spec-select"
                           value={uploadLevel}
                           onChange={(e) => {
                             setUploadLevel(e.target.value);
                             setSelectedCourseIds([]);
+                            setSelectedCourseCodes([]);
                           }}
                         >
-                          <option value="">Select level</option>
+                          <option value="">اختر المستوى</option>
                           {courseLevels.map((lv) => (
-                            <option key={lv} value={lv}>Level {lv}</option>
+                            <option key={lv.id || lv} value={lv.id || lv}>
+                              {lv.label_ar ? `${lv.label_ar} — ${lv.label_en}` : `Level ${lv}`}
+                            </option>
                           ))}
                         </select>
-                        {courseLevels.length === 0 && (
-                          <small className="field-hint warn">
-                            Set a Level on your courses in My Courses first.
-                          </small>
-                        )}
                       </div>
                     </div>
                   )}
 
                   {targetRoles.includes('student') && (
-                    <div className={`upload-step ${selectedCourseIds.length ? 'done' : 'current'}`}>
+                    <div className={`upload-step ${selectedCourseCodes.length || selectedCourseIds.length ? 'done' : 'current'}`}>
                       <span className="step-num">3</span>
                       <div className="step-body">
-                        <label className="step-label">Courses * (multi-select)</label>
-                        <div className="role-chips">
+                        <label className="step-label">المقررات / Courses * (يمكن اختيار أكثر من مقرر)</label>
+                        <div className="role-chips" style={{ flexWrap: 'wrap' }}>
                           {coursesForUploadLevel.map((c) => {
-                            const selected = selectedCourseIds.includes(String(c.id));
+                            const code = c.code || String(c.id);
+                            const selected = selectedCourseCodes.includes(code) || selectedCourseIds.includes(String(c.id));
                             return (
                               <button
                                 type="button"
-                                key={c.id}
+                                key={code}
                                 className={`role-chip ${selected ? 'selected' : ''}`}
+                                title={c.code ? `${c.code} · ${c.credit_hours || ''}س` : c.title}
                                 onClick={() => {
-                                  setSelectedCourseIds((prev) =>
-                                    selected
-                                      ? prev.filter((id) => id !== String(c.id))
-                                      : [...prev, String(c.id)]
-                                  );
-                                  if (c.specialization) setSelectedSpecialization(c.specialization);
+                                  if (c.code) {
+                                    setSelectedCourseCodes((prev) =>
+                                      selected
+                                        ? prev.filter((x) => x !== c.code)
+                                        : [...prev, c.code]
+                                    );
+                                    if (c.specialization) setSelectedSpecialization(c.specialization);
+                                  } else {
+                                    setSelectedCourseIds((prev) =>
+                                      selected
+                                        ? prev.filter((id) => id !== String(c.id))
+                                        : [...prev, String(c.id)]
+                                    );
+                                    if (c.specialization) setSelectedSpecialization(c.specialization);
+                                  }
                                 }}
                               >
-                                {c.title} (#{c.id})
+                                {c.code ? (
+                                  <>
+                                    <strong>{c.code}</strong>
+                                    <span style={{ display: 'block', fontSize: '0.85em' }}>{c.title}</span>
+                                  </>
+                                ) : (
+                                  `${c.title} (#${c.id})`
+                                )}
                               </button>
                             );
                           })}
@@ -850,9 +902,9 @@ const Chat = () => {
                         {uploadLevel && coursesForUploadLevel.length === 0 && (
                           <small className="field-hint warn">No courses for this level.</small>
                         )}
-                        {!selectedCourseIds.length && (
+                        {!selectedCourseCodes.length && !selectedCourseIds.length && (
                           <small className="field-hint warn">
-                            Only enrolled students in the selected courses can see or ask about this PDF.
+                            فقط الطلاب المسجلون في المقررات المختارة يقدرون يشوفوا أو يسألوا عن هذا الملف.
                           </small>
                         )}
                       </div>

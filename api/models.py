@@ -137,6 +137,7 @@ class CourseCreate(BaseModel):
     description: Optional[str] = None
     specialization: str
     level: Optional[str] = None
+    course_code: Optional[str] = None
     course_url: Optional[str] = None
     course_type: Optional[str] = "internal"  # internal, external
     thumbnail_url: Optional[str] = None  # Will be auto-generated for YouTube URLs
@@ -146,6 +147,7 @@ class CourseUpdate(BaseModel):
     description: Optional[str] = None
     specialization: Optional[str] = None
     level: Optional[str] = None
+    course_code: Optional[str] = None
     course_url: Optional[str] = None
     is_active: Optional[str] = None
     course_type: Optional[str] = None
@@ -157,6 +159,7 @@ class CourseResponse(BaseModel):
     description: Optional[str]
     specialization: str
     level: Optional[str] = None
+    course_code: Optional[str] = None
     faculty_id: int
     faculty_name: Optional[str] = None
     created_at: datetime
@@ -166,9 +169,33 @@ class CourseResponse(BaseModel):
     course_type: str
     thumbnail_url: Optional[str] = None
     enrollment_count: Optional[int] = 0
+    credit_hours: Optional[int] = None
 
     class Config:
         from_attributes = True
+
+
+class CatalogLevelResponse(BaseModel):
+    id: str
+    label_ar: str
+    label_en: str
+
+
+class CatalogCourseResponse(BaseModel):
+    code: str
+    title: str
+    level: str
+    credit_hours: int
+    specialization: str
+
+
+class CatalogLevelsResponse(BaseModel):
+    levels: List[CatalogLevelResponse]
+
+
+class CatalogCoursesResponse(BaseModel):
+    level: str
+    courses: List[CatalogCourseResponse]
 
 class CourseListResponse(BaseModel):
     courses: List[CourseResponse]

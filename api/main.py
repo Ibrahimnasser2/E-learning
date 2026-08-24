@@ -55,6 +55,7 @@ try:
         AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
         AdminUploadUsersResponse, CourseRosterUploadResponse,
         FacultyStudentsUploadResponse,
+        CatalogLevelsResponse, CatalogCoursesResponse, CatalogLevelResponse, CatalogCourseResponse,
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
@@ -81,6 +82,7 @@ except ImportError:
         AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
         AdminUploadUsersResponse, CourseRosterUploadResponse,
         FacultyStudentsUploadResponse,
+        CatalogLevelsResponse, CatalogCoursesResponse, CatalogLevelResponse, CatalogCourseResponse,
     )
     from api.rag_manager_simple import RAGManagerPGVector
 
@@ -1236,6 +1238,7 @@ async def upload_file(
     specialization: str = Form(None),  # Specialization for students (optional)
     course_id: int = Form(None),
     course_ids: str = Form(None),  # JSON list of course IDs (multi-select)
+    course_codes: str = Form(None),  # JSON list of catalog codes e.g. ["2310 ويب"]
     level: str = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -1249,7 +1252,19 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Invalid target roles")
 
     resolved_course_ids = []
-    if course_ids:
+    if course_codes:
+        try:
+            codes = json.loads(course_codes) if isinstance(course_codes, str) else course_codes
+            if not isinstance(codes, list) or not codes:
+                raise ValueError("empty")
+        except Exception:
+            raise HTTPException(status_code=400, detail="course_codes must be a non-empty JSON list")
+        if not level:
+            raise HTTPException(status_code=400, detail="level is required when using course_codes")
+        for code in codes:
+            course_obj = _ensure_faculty_catalog_course(db, current_user, str(code), str(level))
+            resolved_course_ids.append(course_obj.id)
+    elif course_ids:
         try:
             parsed = json.loads(course_ids) if isinstance(course_ids, str) else course_ids
             if isinstance(parsed, list):
@@ -1884,6 +1899,7 @@ def _course_to_response(course, faculty_name=None, enrollment_count=0) -> Course
         description=course.description,
         specialization=course.specialization,
         level=getattr(course, "level", None),
+        course_code=getattr(course, "course_code", None),
         faculty_id=course.faculty_id,
         faculty_name=faculty_name,
         created_at=course.created_at,
@@ -1896,7 +1912,74 @@ def _course_to_response(course, faculty_name=None, enrollment_count=0) -> Course
     )
 
 
+def _ensure_faculty_catalog_course(db: Session, faculty_user: User, course_code: str, level: str = None):
+    """Find or create a Course row for this faculty from the official curriculum catalog."""
+    try:
+        from curriculum_catalog import find_catalog_course
+    except ImportError:
+        from api.curriculum_catalog import find_catalog_course
+
+    catalog = find_catalog_course(course_code)
+    if not catalog:
+        raise HTTPException(status_code=400, detail=f"Unknown course code: {course_code}")
+    if level and str(catalog["level"]) != str(level):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Course {course_code} belongs to level {catalog['level']}, not {level}",
+        )
+
+    existing = db.query(Course).filter(
+        Course.faculty_id == faculty_user.id,
+        Course.course_code == catalog["code"],
+    ).first()
+    if existing:
+        if not existing.level:
+            existing.level = catalog["level"]
+        return existing
+
+    course = Course(
+        title=catalog["title"],
+        description=f"{catalog['code']} · {catalog['credit_hours']} ساعة معتمدة",
+        specialization=catalog["specialization"],
+        level=catalog["level"],
+        course_code=catalog["code"],
+        faculty_id=faculty_user.id,
+        course_type="internal",
+        is_active="active",
+    )
+    db.add(course)
+    db.commit()
+    db.refresh(course)
+    return course
+
+
 # ==================== Course Management Endpoints ====================
+
+@app.get("/catalog/levels", response_model=CatalogLevelsResponse)
+async def get_catalog_levels(current_user: User = Depends(get_current_user)):
+    try:
+        from curriculum_catalog import get_levels
+    except ImportError:
+        from api.curriculum_catalog import get_levels
+    levels = [CatalogLevelResponse(**lv) for lv in get_levels()]
+    return CatalogLevelsResponse(levels=levels)
+
+
+@app.get("/catalog/courses", response_model=CatalogCoursesResponse)
+async def get_catalog_courses(
+    level: str = Query(..., description="Level id: 1..5"),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        from curriculum_catalog import get_courses_for_level, get_levels
+    except ImportError:
+        from api.curriculum_catalog import get_courses_for_level, get_levels
+    valid = {lv["id"] for lv in get_levels()}
+    if str(level) not in valid:
+        raise HTTPException(status_code=400, detail="Invalid level. Use 1–5.")
+    courses = [CatalogCourseResponse(**c) for c in get_courses_for_level(level)]
+    return CatalogCoursesResponse(level=str(level), courses=courses)
+
 
 @app.post("/courses", response_model=CourseResponse)
 async def create_course(
@@ -1925,6 +2008,7 @@ async def create_course(
         description=course_data.description,
         specialization=course_data.specialization,
         level=str(course_data.level).strip() if course_data.level else None,
+        course_code=str(course_data.course_code).strip() if course_data.course_code else None,
         faculty_id=current_user.id,
         course_url=course_data.course_url,
         course_type=course_data.course_type or "internal",
@@ -2103,6 +2187,8 @@ async def update_course(
         course.specialization = course_data.specialization
     if course_data.level is not None:
         course.level = str(course_data.level).strip() or None
+    if course_data.course_code is not None:
+        course.course_code = str(course_data.course_code).strip() or None
     if course_data.course_url is not None:
         course.course_url = course_data.course_url
     if course_data.is_active is not None:
@@ -2314,21 +2400,35 @@ FACULTY_STUDENT_COURSE_COLUMNS = (
 )
 
 
-def _parse_course_ids_cell(raw) -> list:
+def _parse_course_refs_cell(raw) -> dict:
+    """
+    Parse Excel cell into numeric ids and/or catalog codes.
+    Returns {"ids": [...], "codes": [...]}.
+    """
     if raw is None:
-        return []
+        return {"ids": [], "codes": []}
     text = str(raw).strip()
     if not text or text.lower() == "nan":
-        return []
-    parts = re.split(r"[,|;\s]+", text)
+        return {"ids": [], "codes": []}
+    # Split on comma / pipe / semicolon (not spaces — codes contain spaces)
+    parts = re.split(r"[,|;]+", text)
     ids = []
+    codes = []
     for p in parts:
         p = p.strip()
+        if not p:
+            continue
         if p.endswith(".0") and p[:-2].isdigit():
             p = p[:-2]
         if p.isdigit():
             ids.append(int(p))
-    return list(dict.fromkeys(ids))
+        else:
+            codes.append(p)
+    return {"ids": list(dict.fromkeys(ids)), "codes": list(dict.fromkeys(codes))}
+
+
+def _parse_course_ids_cell(raw) -> list:
+    return _parse_course_refs_cell(raw)["ids"]
 
 
 @app.post("/faculty/upload-students", response_model=FacultyStudentsUploadResponse)
@@ -2376,19 +2476,33 @@ async def faculty_upload_students(
             if stem.isdigit():
                 student_id_val = stem
 
-        course_ids = _parse_course_ids_cell(course_ids_raw)
-        if not course_ids:
-            errors.append({
-                "row": row_num,
-                "university_id": student_id_val,
-                "reason": "Missing course IDs",
-            })
-            continue
         if not level_val:
             errors.append({
                 "row": row_num,
                 "university_id": student_id_val,
                 "reason": "Missing level",
+            })
+            continue
+
+        refs = _parse_course_refs_cell(course_ids_raw)
+        course_ids = list(refs["ids"])
+        for code in refs["codes"]:
+            try:
+                cobj = _ensure_faculty_catalog_course(db, current_user, code, str(level_val).strip())
+                course_ids.append(cobj.id)
+                owned_course_ids.add(cobj.id)
+            except HTTPException as he:
+                errors.append({
+                    "row": row_num,
+                    "university_id": student_id_val,
+                    "reason": he.detail if isinstance(he.detail, str) else str(he.detail),
+                })
+        course_ids = list(dict.fromkeys(course_ids))
+        if not course_ids:
+            errors.append({
+                "row": row_num,
+                "university_id": student_id_val,
+                "reason": "Missing course IDs or codes",
             })
             continue
 

@@ -152,8 +152,8 @@ export const chatAPI = {
 
 // File API interface
 export const fileAPI = {
-  // Upload file to server (with target_roles, specialization, multi course_ids, level)
-  uploadFile: async (file, targetRoles = null, specialization = null, courseId = null, courseIds = null, level = null) => {
+  // Upload file to server (with target_roles, specialization, multi course_ids/codes, level)
+  uploadFile: async (file, targetRoles = null, specialization = null, courseId = null, courseIds = null, level = null, courseCodes = null) => {
     if (!targetRoles || !Array.isArray(targetRoles) || targetRoles.length === 0) {
       throw new Error('Please select at least one target role before uploading.');
     }
@@ -163,12 +163,16 @@ export const fileAPI = {
     if (specialization) {
       formData.append('specialization', specialization);
     }
-    const ids = Array.isArray(courseIds) && courseIds.length
-      ? courseIds.map(Number)
-      : (courseId ? [Number(courseId)] : []);
-    if (ids.length) {
-      formData.append('course_ids', JSON.stringify(ids));
-      formData.append('course_id', String(ids[0]));
+    if (Array.isArray(courseCodes) && courseCodes.length) {
+      formData.append('course_codes', JSON.stringify(courseCodes));
+    } else {
+      const ids = Array.isArray(courseIds) && courseIds.length
+        ? courseIds.map(Number)
+        : (courseId ? [Number(courseId)] : []);
+      if (ids.length) {
+        formData.append('course_ids', JSON.stringify(ids));
+        formData.append('course_id', String(ids[0]));
+      }
     }
     if (level) {
       formData.append('level', String(level));
@@ -406,6 +410,18 @@ export const courseAPI = {
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     );
+    return response.data;
+  },
+
+  getCatalogLevels: async () => {
+    const response = await axios.get(`${API_BASE_URL}/catalog/levels`);
+    return response.data;
+  },
+
+  getCatalogCourses: async (level) => {
+    const response = await axios.get(`${API_BASE_URL}/catalog/courses`, {
+      params: { level: String(level) },
+    });
     return response.data;
   },
 
