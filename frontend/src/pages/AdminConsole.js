@@ -4,10 +4,10 @@ import { useAuth } from '../context/AuthContext';
 import { adminAPI } from '../services/api';
 import './AdminConsole.css';
 
-const TEMPLATE_HEADERS = ['University ID', 'Name', 'Email', 'Role', 'Specialization'];
+const TEMPLATE_HEADERS = ['University ID', 'Name', 'Email', 'Specialization'];
 const TEMPLATE_SAMPLE = [
-  ['441234567', 'Ahmed Ali', '441234567@student.kk.edu.sa', 'Student', 'Computer Science'],
-  ['fac001', 'Dr. Sara Hassan', 'sara.hassan@kk.edu.sa', 'Instructor', ''],
+  ['441234567', 'Ahmed Ali', '441234567@student.kk.edu.sa', 'Computer Science'],
+  ['sara.hassan', 'Dr. Sara Hassan', 'sara.hassan@kk.edu.sa', ''],
 ];
 
 const AdminConsole = () => {
@@ -115,8 +115,8 @@ const AdminConsole = () => {
         <section className="admin-panel">
           <h2>Provision Users from Excel</h2>
           <p className="admin-panel-desc">
-            Upload a spreadsheet to create student and faculty accounts. Public registration is disabled;
-            all users must be provisioned through this portal.
+            Upload a spreadsheet to create student and faculty accounts. Role is detected automatically
+            from the email domain — no Role column needed.
           </p>
 
           <div className="requirements-table-wrap">
@@ -130,24 +130,27 @@ const AdminConsole = () => {
               </thead>
               <tbody>
                 <tr>
-                  <td>University ID</td>
-                  <td>Yes</td>
-                  <td>Unique ID; used as login username</td>
-                </tr>
-                <tr>
                   <td>Name</td>
                   <td>Yes</td>
                   <td>Full display name</td>
                 </tr>
                 <tr>
                   <td>Email</td>
-                  <td>Yes</td>
-                  <td>Unique email address</td>
+                  <td>Yes*</td>
+                  <td>
+                    <code>{'{id}@student.kk.edu.sa'}</code> → Student ·{' '}
+                    <code>{'{account}@kk.edu.sa'}</code> → Faculty
+                  </td>
                 </tr>
                 <tr>
-                  <td>Role</td>
-                  <td>Yes</td>
-                  <td>Student or Instructor</td>
+                  <td>University ID</td>
+                  <td>Alt.</td>
+                  <td>Student only — email auto-generated as <code>{'{id}@student.kk.edu.sa'}</code></td>
+                </tr>
+                <tr>
+                  <td>Account</td>
+                  <td>Alt.</td>
+                  <td>Faculty only — email auto-generated as <code>{'{account}@kk.edu.sa'}</code></td>
                 </tr>
                 <tr>
                   <td>Specialization</td>
@@ -159,8 +162,9 @@ const AdminConsole = () => {
           </div>
 
           <p className="password-note">
-            Initial password for provisioned users: <strong>MANAMU</strong> + last 4 characters of University ID
-            (e.g. ID <code>441234567</code> → password <code>MANAMU4567</code>).
+            Role is inferred from email — students use <strong>@student.kk.edu.sa</strong>, faculty use{' '}
+            <strong>@kk.edu.sa</strong>. Initial password: <strong>MANAMU</strong> + last 4 characters of
+            University ID / account (e.g. <code>441234567</code> → <code>MANAMU4567</code>).
           </p>
 
           <button type="button" className="admin-btn admin-btn-secondary" onClick={downloadTemplate}>

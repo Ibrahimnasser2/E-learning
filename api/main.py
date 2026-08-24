@@ -428,18 +428,92 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     return UserResponse.from_orm(current_user)
 
 
-def _normalize_provisioned_role(raw_role: str):
-    """Map Excel role labels to internal RoleEnum values."""
-    if raw_role is None or (isinstance(raw_role, float) and pd.isna(raw_role)):
+def _role_from_email(email: str):
+    """
+    Infer role from email domain (v4 convention):
+      {id}@student.kk.edu.sa -> student
+      {account}@kk.edu.sa      -> faculty (not student subdomain)
+    """
+    if not email or "@" not in email:
         return None
-    value = str(raw_role).strip().lower()
-    if value in ("student", "students", "طالب", "طلاب"):
+    normalized = email.strip().lower()
+    if normalized.endswith("@student.kk.edu.sa"):
         return RoleEnum.student
-    if value in ("instructor", "faculty", "teacher", "عضو هيئة تدريس", "مدرس"):
+    if normalized.endswith("@kk.edu.sa"):
         return RoleEnum.faculty
-    if value in ("admin", "administrative", "administrator", "إدارة"):
-        return None  # never provision admin via Excel
     return None
+
+
+def _email_local_part(email: str) -> str:
+    return email.split("@", 1)[0].strip()
+
+
+def _resolve_provisioned_user(row, df_columns):
+    """
+    Build name, email, username, university_id, role from Excel row.
+    Accepts either Email (role inferred) or ID columns with auto-generated email.
+    """
+    name = str(row.get("Name", "")).strip()
+    if not name or name.lower() == "nan":
+        return None, "Missing Name"
+
+    specialization = None
+    if "Specialization" in df_columns and not pd.isna(row.get("Specialization")):
+        specialization = str(row["Specialization"]).strip() or None
+
+    raw_email = row.get("Email")
+    has_email = raw_email is not None and not pd.isna(raw_email) and str(raw_email).strip().lower() not in ("", "nan")
+
+    raw_university_id = row.get("University ID")
+    has_uid = raw_university_id is not None and not pd.isna(raw_university_id) and str(raw_university_id).strip().lower() not in ("", "nan")
+
+    raw_account = row.get("Account")
+    has_account = raw_account is not None and not pd.isna(raw_account) and str(raw_account).strip().lower() not in ("", "nan")
+
+    email = None
+    role = None
+    username = None
+    university_id = None
+
+    if has_email:
+        email = str(raw_email).strip().lower()
+        if "@" not in email:
+            return None, "Invalid Email"
+        role = _role_from_email(email)
+        if role is None:
+            return None, (
+                "Unrecognized email domain. Use @student.kk.edu.sa for students "
+                "or @kk.edu.sa for faculty."
+            )
+        username = _email_local_part(email)
+        university_id = str(raw_university_id).strip() if has_uid else username
+        if has_uid and university_id != username and role == RoleEnum.student:
+            return None, "University ID must match the email local-part for students"
+    elif has_uid:
+        university_id = str(raw_university_id).strip()
+        email = f"{university_id}@student.kk.edu.sa"
+        role = RoleEnum.student
+        username = university_id
+    elif has_account:
+        account = str(raw_account).strip()
+        email = f"{account}@kk.edu.sa"
+        role = RoleEnum.faculty
+        username = account
+        university_id = account
+    else:
+        return None, "Provide Email, University ID (student), or Account (faculty)"
+
+    if role == RoleEnum.admin or email == ADMIN_EMAIL.lower():
+        return None, "Cannot provision administrative accounts via upload"
+
+    return {
+        "name": name,
+        "email": email,
+        "username": username,
+        "university_id": university_id,
+        "role": role,
+        "specialization": specialization if role == RoleEnum.student else None,
+    }, None
 
 
 def _provisioned_password(university_id: str) -> str:
@@ -490,8 +564,11 @@ async def admin_upload_users(
     db: Session = Depends(get_db),
 ):
     """
-    Upload Excel with columns: University ID, Name, Email, Role.
-    Optional: Specialization (for students).
+    Upload Excel with columns: Name, and one of:
+      - Email (role inferred: @student.kk.edu.sa = student, @kk.edu.sa = faculty)
+      - University ID (student — email auto-generated)
+      - Account (faculty — email auto-generated)
+    Optional: Specialization (students).
     """
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
@@ -501,11 +578,13 @@ async def admin_upload_users(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
 
-    required_columns = {"University ID", "Name", "Email", "Role"}
-    if not required_columns.issubset(set(df.columns)):
+    columns = set(df.columns)
+    if "Name" not in columns:
+        raise HTTPException(status_code=400, detail="Excel must contain a Name column.")
+    if not ({"Email", "University ID", "Account"} & columns):
         raise HTTPException(
             status_code=400,
-            detail=f"Excel must contain columns: {', '.join(sorted(required_columns))}",
+            detail="Excel must contain Email, or University ID (students), or Account (faculty).",
         )
 
     added = 0
@@ -515,30 +594,18 @@ async def admin_upload_users(
     for idx, row in df.iterrows():
         row_num = int(idx) + 2  # header is row 1
         try:
-            university_id = str(row["University ID"]).strip()
-            name = str(row["Name"]).strip()
-            email = str(row["Email"]).strip().lower()
-            role_raw = row["Role"]
-            specialization = None
-            if "Specialization" in df.columns and not pd.isna(row.get("Specialization")):
-                specialization = str(row["Specialization"]).strip() or None
-
-            if not university_id or university_id.lower() == "nan":
-                errors.append({"row": row_num, "reason": "Missing University ID"})
-                continue
-            if not name or name.lower() == "nan":
-                errors.append({"row": row_num, "reason": "Missing Name"})
-                continue
-            if not email or email == "nan" or "@" not in email:
-                errors.append({"row": row_num, "reason": "Invalid Email"})
+            parsed, err = _resolve_provisioned_user(row, columns)
+            if err:
+                errors.append({"row": row_num, "reason": err})
                 continue
 
-            mapped_role = _normalize_provisioned_role(role_raw)
-            if mapped_role is None:
-                errors.append({"row": row_num, "reason": f"Invalid or forbidden Role: {role_raw}"})
-                continue
+            username = parsed["username"]
+            email = parsed["email"]
+            university_id = parsed["university_id"]
+            name = parsed["name"]
+            mapped_role = parsed["role"]
+            specialization = parsed["specialization"]
 
-            username = university_id
             existing = db.query(User).filter(
                 or_(
                     User.username == username,
@@ -558,7 +625,7 @@ async def admin_upload_users(
                 role=mapped_role,
                 university_id=university_id,
                 display_name=name,
-                specialization=specialization if mapped_role == RoleEnum.student else None,
+                specialization=specialization,
             )
             db.add(db_user)
             added += 1

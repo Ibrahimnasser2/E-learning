@@ -106,9 +106,12 @@ npm start
 
 1. Log in at `/login` with role **Administrative**, username `maha`, and your `ADMIN_PASSWORD`.
 2. Open **Admin Console** (`/admin`).
-3. Download the CSV template and fill columns: **University ID**, **Name**, **Email**, **Role** (`Student` or `Instructor`), optional **Specialization**.
+3. Download the CSV template and fill columns: **Name**, **Email** (role is auto-detected from domain), optional **University ID** / **Specialization**.
+   - Students: `{id}@student.kk.edu.sa`
+   - Faculty: `{account}@kk.edu.sa`
+   - Or provide **University ID** (student) / **Account** (faculty) without email — addresses are generated automatically.
 4. Upload the Excel file (`.xlsx` / `.xls`).
-5. Provisioned users log in with **University ID** as username and initial password `MANAMU` + last 4 digits of their ID (e.g. `MANAMU4567`).
+5. Provisioned users log in with their **University ID / account** as username and initial password `MANAMU` + last 4 digits of their ID (e.g. `MANAMU4567`).
 
 ### Faculty & students
 
