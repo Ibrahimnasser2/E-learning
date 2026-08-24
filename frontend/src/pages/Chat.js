@@ -865,6 +865,7 @@ const Chat = () => {
                     </div>
                   </div>
                 </div>
+                </div>
               </>
             )}
             <div className="files-list">
