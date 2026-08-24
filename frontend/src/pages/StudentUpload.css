@@ -1,13 +1,14 @@
 /* Student Upload Page Styles */
 .student-upload-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  background: var(--page-gradient);
   padding: 2rem;
   display: flex;
   justify-content: center;
   align-items: flex-start;
   overflow-y: auto;
   overflow-x: hidden;
+  font-family: var(--font-ui);
 }
 
 .upload-card {

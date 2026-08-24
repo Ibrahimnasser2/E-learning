@@ -1,7 +1,11 @@
 .student-courses-page {
   min-height: 100vh;
-  background-color: var(--background-color);
+  background:
+    radial-gradient(circle at 12% 18%, rgba(33, 150, 243, 0.08) 0, transparent 55%),
+    radial-gradient(circle at 88% 72%, rgba(92, 107, 192, 0.1) 0, transparent 55%),
+    var(--background-color);
   padding-bottom: 4rem;
+  font-family: var(--font-ui);
 }
 
 .page-container {
@@ -16,8 +20,12 @@
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 2.5rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--border-color);
+  padding: 1.5rem 1.75rem;
+  border-radius: var(--radius-lg);
+  background: var(--header-gradient);
+  color: #fff;
+  box-shadow: var(--shadow);
+  border-bottom: none;
 }
 
 .header-content {
@@ -32,18 +40,18 @@
   gap: 0.75rem;
   font-size: 1.875rem;
   font-weight: 700;
-  color: var(--text-primary);
+  color: #fff;
   letter-spacing: -0.025em;
 }
 
 .icon-lg {
   width: 2rem;
   height: 2rem;
-  color: var(--accent-color);
+  color: var(--blue-300);
 }
 
 .page-subtitle {
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.82);
   font-size: 1rem;
 }
 
@@ -392,12 +400,12 @@
 }
 
 .btn-primary {
-  background-color: var(--primary-color);
+  background: var(--btn-gradient);
   color: white;
 }
 
 .btn-primary:hover {
-  background-color: var(--primary-light);
+  background: var(--btn-gradient-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
