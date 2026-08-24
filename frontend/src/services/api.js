@@ -309,11 +309,10 @@ export const adminAPI = {
 
 // Auth API interface
 export const authAPI = {
-  login: async (username, password, role) => {
+  login: async (email, password) => {
     const response = await axios.post(`${API_BASE_URL}/login`, {
-      username,
+      email,
       password,
-      role
     });
     return response.data;
   },
