@@ -19,8 +19,16 @@ import {
   Menu,
   X,
   Download,
-  File
+  File,
+  Users,
+  FileSpreadsheet
 } from 'lucide-react';
+
+const ROSTER_TEMPLATE_ROWS = [
+  ['441234567', '101'],
+  ['441234568', '101'],
+  ['441234569', '102'],
+];
 
 const Chat = () => {
   const { user, logout } = useAuth();
@@ -61,6 +69,11 @@ const Chat = () => {
   const [selectedSpecialization, setSelectedSpecialization] = useState('');
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const [myCourses, setMyCourses] = useState([]);
+  const [rosterFile, setRosterFile] = useState(null);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterResult, setRosterResult] = useState(null);
+  const [rosterSectionNumber, setRosterSectionNumber] = useState('');
+  const [rosterList, setRosterList] = useState([]);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -95,6 +108,65 @@ const Chat = () => {
     const cid = searchParams.get('courseId');
     if (cid) setSelectedCourseId(cid);
   }, [searchParams]);
+
+  useEffect(() => {
+    if (user?.role === 'faculty' && selectedCourseId) {
+      loadCourseRoster(selectedCourseId);
+    } else {
+      setRosterList([]);
+    }
+  }, [user?.role, selectedCourseId]);
+
+  const loadCourseRoster = async (courseId) => {
+    try {
+      const roster = await courseAPI.getCourseRoster(courseId);
+      setRosterList(roster || []);
+    } catch (e) {
+      console.error('Error loading roster:', e);
+      setRosterList([]);
+    }
+  };
+
+  const downloadRosterTemplate = () => {
+    const headers = ['الرقم الجامعي', 'رقم الشعبة'];
+    const csv = [headers, ...ROSTER_TEMPLATE_ROWS]
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'section-roster-template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleRosterUpload = async () => {
+    if (!selectedCourseId) {
+      alert('Please select a course first.');
+      return;
+    }
+    if (!rosterFile) {
+      alert('Please choose an Excel file.');
+      return;
+    }
+    setRosterLoading(true);
+    setRosterResult(null);
+    try {
+      const res = await courseAPI.uploadCourseRoster(
+        Number(selectedCourseId),
+        rosterFile,
+        rosterSectionNumber || null
+      );
+      setRosterResult(res);
+      setRosterFile(null);
+      await loadCourseRoster(selectedCourseId);
+    } catch (e) {
+      alert(e?.response?.data?.detail || 'Roster upload failed.');
+    } finally {
+      setRosterLoading(false);
+    }
+  };
 
   const loadMyCourses = async () => {
     try {
@@ -451,8 +523,8 @@ const Chat = () => {
           </button>
           {/* Show upload file button for faculty only */}
           {user?.role === 'faculty' && (
-            <button className="sidebar-button" onClick={() => setActiveTab('files')} title="Upload">
-              <Upload size={18} />{sidebarOpen && ' Upload Files'}
+            <button className="sidebar-button" onClick={() => setActiveTab('files')} title="Course setup">
+              <Upload size={18} />{sidebarOpen && ' Course Setup'}
             </button>
           )}
           {/* Show courses platform button */}
@@ -486,7 +558,7 @@ const Chat = () => {
             className={`tab-button ${activeTab === 'files' ? 'active' : ''}`}
             onClick={() => setActiveTab('files')}
           >
-            <File size={16} /> Files ({mergedPDFs.length})
+            <File size={16} /> Course Setup
           </button>
         </div>
 
@@ -578,11 +650,134 @@ const Chat = () => {
         {/* Files Tab Content */}
         {activeTab === 'files' && (
           <div className="files-content">
-            {/* Only show upload section for faculty */}
             {user.role === 'faculty' && (
-              <div className="upload-section">
-                <h3>Upload Knowledge Documents</h3>
-                <p className="upload-subtitle">PDF files only · Choose audience first, then upload</p>
+              <>
+                <div className="roster-upload-panel">
+                  <div className="roster-panel-head">
+                    <Users size={22} />
+                    <div>
+                      <h3>Upload Section Students</h3>
+                      <p>Excel with student IDs from the admin master list · ملف الطلاب</p>
+                    </div>
+                  </div>
+
+                  <div className="roster-panel-body">
+                    <div className="roster-field">
+                      <label htmlFor="roster-course-select">Course *</label>
+                      <select
+                        id="roster-course-select"
+                        className="spec-select"
+                        value={selectedCourseId}
+                        onChange={(e) => {
+                          setSelectedCourseId(e.target.value);
+                          setRosterResult(null);
+                          const c = myCourses.find((x) => String(x.id) === e.target.value);
+                          if (c) setSelectedSpecialization(c.specialization);
+                        }}
+                      >
+                        <option value="">Select course</option>
+                        {myCourses.map((c) => (
+                          <option key={c.id} value={c.id}>{c.title}</option>
+                        ))}
+                      </select>
+                      {myCourses.length === 0 && (
+                        <small className="field-hint warn">
+                          Create a course first from My Courses.
+                        </small>
+                      )}
+                    </div>
+
+                    <div className="roster-field">
+                      <label htmlFor="roster-section">Default section (optional)</label>
+                      <input
+                        id="roster-section"
+                        type="text"
+                        className="spec-select"
+                        value={rosterSectionNumber}
+                        onChange={(e) => setRosterSectionNumber(e.target.value)}
+                        placeholder="e.g. 101"
+                      />
+                    </div>
+
+                    <div className="roster-example-mini">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>الرقم الجامعي</th>
+                            <th>رقم الشعبة</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ROSTER_TEMPLATE_ROWS.map((row, i) => (
+                            <tr key={i}>
+                              <td>{row[0]}</td>
+                              <td>{row[1]}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="roster-actions">
+                      <button type="button" className="roster-template-btn" onClick={downloadRosterTemplate}>
+                        <FileSpreadsheet size={16} /> Download template
+                      </button>
+                      <label className="roster-file-picker">
+                        <input
+                          type="file"
+                          accept=".xlsx,.xls"
+                          onChange={(e) => {
+                            setRosterFile(e.target.files?.[0] || null);
+                            setRosterResult(null);
+                          }}
+                        />
+                        {rosterFile ? rosterFile.name : 'Choose Excel file (.xlsx)'}
+                      </label>
+                      <button
+                        type="button"
+                        className="roster-upload-btn"
+                        disabled={!rosterFile || !selectedCourseId || rosterLoading}
+                        onClick={handleRosterUpload}
+                      >
+                        {rosterLoading ? 'Uploading…' : 'Upload & Link Students'}
+                      </button>
+                    </div>
+
+                    {rosterResult && (
+                      <div className="roster-result-box">
+                        Linked <strong>{rosterResult.linked}</strong> · Skipped <strong>{rosterResult.skipped}</strong>
+                        {rosterResult.errors?.length > 0 && (
+                          <ul>
+                            {rosterResult.errors.map((err, i) => (
+                              <li key={i}>
+                                Row {err.row}: {err.reason}
+                                {err.university_id ? ` (${err.university_id})` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="roster-enrolled">
+                      <strong>Enrolled in this course: {rosterList.length}</strong>
+                      {rosterList.length > 0 && (
+                        <ul>
+                          {rosterList.map((r) => (
+                            <li key={r.id}>
+                              {r.university_id || r.student_id} — {r.student_name || 'Student'}
+                              {r.section_number ? ` · Section ${r.section_number}` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="upload-section">
+                  <h3>Upload Course Materials</h3>
+                  <p className="upload-subtitle">PDF files for the AI tutor · after linking students</p>
 
                 <div className="upload-steps">
                   <div className={`upload-step ${targetRoles.length > 0 ? 'done' : 'current'}`}>
@@ -670,7 +865,7 @@ const Chat = () => {
                     </div>
                   </div>
                 </div>
-              </div>
+              </>
             )}
             <div className="files-list">
               <h3>Documents ({mergedPDFs.length})</h3>
