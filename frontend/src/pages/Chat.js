@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { chatAPI, fileAPI, ragAPI } from '../services/api';
+import { chatAPI, fileAPI, ragAPI, courseAPI } from '../services/api';
 import { useDropzone } from 'react-dropzone';
 import './Chat.css'; // Styles for chat interface
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   User,
   MessageSquare,
@@ -59,7 +59,10 @@ const Chat = () => {
   ];
   const [targetRoles, setTargetRoles] = useState([]);
   const [selectedSpecialization, setSelectedSpecialization] = useState('');
+  const [selectedCourseId, setSelectedCourseId] = useState('');
+  const [myCourses, setMyCourses] = useState([]);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   // التمرير التلقائي إلى الأسفل عند وصول رسائل جديدة
   const scrollToBottom = () => {
@@ -80,12 +83,35 @@ const Chat = () => {
   }, []);
 
   useEffect(() => {
-    setMessages([]); // مسح المحادثة عند تغيير المستخدم (تسجيل دخول/خروج/تسجيل)
+    setMessages([]);
     if (user) {
       loadChatHistory();
-      loadFiles(); // إعادة تحميل الملفات للمستخدم الجديد
+      loadFiles();
+      loadMyCourses();
     }
   }, [user]);
+
+  useEffect(() => {
+    const cid = searchParams.get('courseId');
+    if (cid) setSelectedCourseId(cid);
+  }, [searchParams]);
+
+  const loadMyCourses = async () => {
+    try {
+      if (user?.role === 'faculty') {
+        const res = await courseAPI.getMyCourses();
+        setMyCourses(res.courses || []);
+      } else if (user?.role === 'student') {
+        const res = await courseAPI.getMyEnrollments();
+        setMyCourses((res || []).map((e) => e.course).filter(Boolean));
+        if ((res || []).length === 1 && !selectedCourseId) {
+          setSelectedCourseId(String(res[0].course_id));
+        }
+      }
+    } catch (e) {
+      console.error('Error loading courses:', e);
+    }
+  };
 
   const loadChatHistory = async () => {
     try {
@@ -117,6 +143,10 @@ const Chat = () => {
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || loading) return;
+    if (user?.role === 'student' && !selectedCourseId) {
+      alert('Please select a course before using the AI tutor.');
+      return;
+    }
 
     setLoading(true);
     const userMessage = newMessage;
@@ -141,6 +171,7 @@ const Chat = () => {
         temperature: settings.temperature,
         outputLength: settings.maxOutput,
         enableWebSearch,
+        courseId: selectedCourseId ? Number(selectedCourseId) : null,
         onToken: (_token, fullText) => {
           setMessages(prev => prev.map(m =>
             m.id === tempId
@@ -185,7 +216,7 @@ const Chat = () => {
   const canUpload =
     user?.role === 'faculty' &&
     targetRoles.length > 0 &&
-    (!targetRoles.includes('student') || !!selectedSpecialization);
+    (!targetRoles.includes('student') || !!selectedCourseId);
 
   const onDrop = async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
@@ -195,10 +226,13 @@ const Chat = () => {
       return;
     }
 
-    if (user.role === 'faculty' && targetRoles.includes('student') && !selectedSpecialization) {
-      alert('Please select a specialization when uploading for students');
+    if (user.role === 'faculty' && targetRoles.includes('student') && !selectedCourseId) {
+      alert('Please select a course when uploading materials for students.');
       return;
     }
+
+    const course = myCourses.find((c) => String(c.id) === String(selectedCourseId));
+    const specForUpload = course?.specialization || selectedSpecialization;
 
     const newUploads = acceptedFiles.map(file => ({
       id: `local-${file.name}-${Date.now()}`,
@@ -214,7 +248,12 @@ const Chat = () => {
       for (const file of acceptedFiles) {
         if (user.role !== 'faculty') continue;
         try {
-          await fileAPI.uploadFile(file, targetRoles, selectedSpecialization);
+          await fileAPI.uploadFile(
+            file,
+            targetRoles,
+            specForUpload,
+            targetRoles.includes('student') ? Number(selectedCourseId) : null
+          );
           setUploadingPDFs(prev => prev.map(f =>
             f.name === file.name && f.status === 'Uploading & indexing...'
               ? { ...f, status: 'Success', error: null }
@@ -452,6 +491,22 @@ const Chat = () => {
         {/* Chat Tab Content */}
         {activeTab === 'chat' && (
           <div className="chat-content">
+            {user?.role === 'student' && (
+              <div className="course-context-bar">
+                <label htmlFor="chat-course-select">AI Tutor course:</label>
+                <select
+                  id="chat-course-select"
+                  value={selectedCourseId}
+                  onChange={(e) => setSelectedCourseId(e.target.value)}
+                  className="spec-select"
+                >
+                  <option value="">Select your course</option>
+                  {myCourses.map((c) => (
+                    <option key={c.id} value={c.id}>{c.title}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             {/* Messages Container */}
             <div className="messages-container">
               {messages.length === 0 ? (
@@ -562,22 +617,26 @@ const Chat = () => {
                   </div>
 
                   {targetRoles.includes('student') && (
-                    <div className={`upload-step ${selectedSpecialization ? 'done' : 'current'}`}>
+                    <div className={`upload-step ${selectedCourseId ? 'done' : 'current'}`}>
                       <span className="step-num">2</span>
                       <div className="step-body">
-                        <label className="step-label">Student specialization *</label>
+                        <label className="step-label">Course *</label>
                         <select
                           className="spec-select"
-                          value={selectedSpecialization}
-                          onChange={(e) => setSelectedSpecialization(e.target.value)}
+                          value={selectedCourseId}
+                          onChange={(e) => {
+                            setSelectedCourseId(e.target.value);
+                            const c = myCourses.find((x) => String(x.id) === e.target.value);
+                            if (c) setSelectedSpecialization(c.specialization);
+                          }}
                         >
-                          <option value="">Select specialization</option>
-                          {specializations.map(spec => (
-                            <option key={spec} value={spec}>{spec}</option>
+                          <option value="">Select course</option>
+                          {myCourses.map((c) => (
+                            <option key={c.id} value={c.id}>{c.title}</option>
                           ))}
                         </select>
-                        {!selectedSpecialization && (
-                          <small className="field-hint warn">Required when Students is selected.</small>
+                        {!selectedCourseId && (
+                          <small className="field-hint warn">Materials are indexed for enrolled students in this course only.</small>
                         )}
                       </div>
                     </div>

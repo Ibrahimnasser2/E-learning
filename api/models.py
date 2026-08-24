@@ -19,7 +19,6 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     username: str
     password: str
-    role: RoleEnum
 
 class UserResponse(BaseModel):
     id: int
@@ -30,6 +29,7 @@ class UserResponse(BaseModel):
     specialization: Optional[str] = None
     university_id: Optional[str] = None
     display_name: Optional[str] = None
+    phone: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -41,6 +41,7 @@ class AdminUserListItem(BaseModel):
     role: RoleEnum
     university_id: Optional[str] = None
     display_name: Optional[str] = None
+    phone: Optional[str] = None
     specialization: Optional[str] = None
     created_at: datetime
 
@@ -77,6 +78,7 @@ class ChatMessageRequest(BaseModel):
     temperature: Optional[float] = 0.2
     output_length: Optional[str] = "mid"
     enable_web_search: Optional[bool] = False
+    course_id: Optional[int] = None
 
 class ChatMessageResponse(BaseModel):
     id: int
@@ -100,6 +102,7 @@ class FileUploadResponse(BaseModel):
     file_size: Optional[int] = None
     file_type: Optional[str] = None
     specialization: Optional[str] = None
+    course_id: Optional[int] = None
     upload_time: datetime
 
     class Config:
@@ -175,7 +178,17 @@ class CourseEnrollmentResponse(BaseModel):
     course_id: int
     enrolled_at: datetime
     progress: int
+    section_number: Optional[str] = None
+    student_name: Optional[str] = None
+    university_id: Optional[str] = None
     course: Optional[CourseResponse] = None
 
     class Config:
         from_attributes = True
+
+
+class CourseRosterUploadResponse(BaseModel):
+    linked: int
+    skipped: int
+    errors: List[dict]
+    reindexed_students: int = 0

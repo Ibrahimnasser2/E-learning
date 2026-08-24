@@ -80,7 +80,7 @@ export const chatAPI = {
   // Streaming chat — calls onToken for each chunk; resolves with final metadata
   sendMessageStream: async (
     message,
-    { topK = 3, temperature = 0.2, outputLength = 'mid', enableWebSearch = false, onToken } = {}
+    { topK = 3, temperature = 0.2, outputLength = 'mid', enableWebSearch = false, courseId = null, onToken } = {}
   ) => {
     const token = localStorage.getItem('token');
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -95,6 +95,7 @@ export const chatAPI = {
         temperature,
         output_length: outputLength,
         enable_web_search: enableWebSearch,
+        course_id: courseId || null,
       }),
     });
 
@@ -152,7 +153,7 @@ export const chatAPI = {
 // File API interface
 export const fileAPI = {
   // Upload file to server (with target_roles and specialization)
-  uploadFile: async (file, targetRoles = null, specialization = null) => {
+  uploadFile: async (file, targetRoles = null, specialization = null, courseId = null) => {
     if (!targetRoles || !Array.isArray(targetRoles) || targetRoles.length === 0) {
       throw new Error('Please select at least one target role before uploading.');
     }
@@ -161,6 +162,9 @@ export const fileAPI = {
     formData.append('target_roles', JSON.stringify(targetRoles));
     if (specialization) {
       formData.append('specialization', specialization);
+    }
+    if (courseId) {
+      formData.append('course_id', String(courseId));
     }
     try {
       const response = await axios.post(`${API_BASE_URL}/upload-file`, formData, {
@@ -366,6 +370,25 @@ export const courseAPI = {
   // Get my enrollments (student only)
   getMyEnrollments: async () => {
     const response = await axios.get(`${API_BASE_URL}/courses/my-enrollments`);
+    return response.data;
+  },
+
+  getCourseRoster: async (courseId) => {
+    const response = await axios.get(`${API_BASE_URL}/courses/${courseId}/roster`);
+    return response.data;
+  },
+
+  uploadCourseRoster: async (courseId, file, sectionNumber = null) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (sectionNumber) {
+      formData.append('section_number', sectionNumber);
+    }
+    const response = await axios.post(
+      `${API_BASE_URL}/courses/${courseId}/upload-roster`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
     return response.data;
   },
 

@@ -106,18 +106,28 @@ npm start
 
 1. Log in at `/login` with role **Administrative**, username `maha`, and your `ADMIN_PASSWORD`.
 2. Open **Admin Console** (`/admin`).
-3. Download the CSV template and fill columns: **Name**, **Email** (role is auto-detected from domain), optional **University ID** / **Specialization**.
-   - Students: `{id}@student.kk.edu.sa`
-   - Faculty: `{account}@kk.edu.sa`
-   - Or provide **University ID** (student) / **Account** (faculty) without email — addresses are generated automatically.
-4. Upload the Excel file (`.xlsx` / `.xls`).
+3. Download **two separate templates** (Students + Faculty) and save as `.xlsx`:
+   - **Students file:** `الرقم الجامعي`, `الاسم`, `الهاتف`
+   - **Faculty file:** `الاسم`, `البريد الجامعي`, `الهاتف`
+   Sample files: `test-data/students.xlsx` and `test-data/faculty.xlsx`
+4. Upload each Excel file separately in Admin Console (students first, then faculty).
 5. Provisioned users log in with their **University ID / account** as username and initial password `MANAMU` + last 4 digits of their ID (e.g. `MANAMU4567`).
 
-### Faculty & students
+### Faculty workflow
 
-1. Log in with credentials provisioned by the administrator (public registration is disabled).
-2. **Faculty**: upload course PDFs and manage courses.
-3. **Students**: chat with the AI tutor using indexed materials.
+1. Log in with faculty credentials provisioned by the administrator.
+2. Open **My Courses** and create a course (title, specialization, etc.).
+3. Click **Section Roster** on a course — upload an Excel file with **University ID** / **Student ID** (optional **Section Number**). IDs must exist in the admin master list; unknown IDs show **Student ID not found**.
+4. Click **Upload Materials** — opens Chat with that course selected. Upload PDFs **for students**; materials are indexed only for students on the roster.
+5. Students in that section can open **Chat**, pick the course, and use the AI tutor.
+
+### Students
+
+1. Log in with credentials provisioned by the administrator.
+2. Open **My Courses** — only courses your instructor linked via roster appear.
+3. Open **Chat**, select your course, and ask questions; answers use that course’s uploaded materials.
+
+Public self-enrollment is disabled; access is roster-based only.
 
 ## Security
 

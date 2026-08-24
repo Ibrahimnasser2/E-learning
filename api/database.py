@@ -48,6 +48,7 @@ class User(Base):
     specialization = Column(String(255), nullable=True)  # التخصص للطلاب
     university_id = Column(String(64), unique=True, index=True, nullable=True)
     display_name = Column(String(255), nullable=True)
+    phone = Column(String(32), nullable=True)
 
     chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     uploaded_files = relationship(
@@ -79,6 +80,7 @@ class UploadedFile(Base):
     uploader_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     target_roles = Column(JSONB, nullable=False)
     specialization = Column(String(255), nullable=True)  # التخصص المستهدف للملف (للطلاب فقط)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_size = Column(Integer)
@@ -121,6 +123,7 @@ class CourseEnrollment(Base):
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    section_number = Column(String(64), nullable=True)
     enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
     progress = Column(Integer, default=0)  # نسبة الإنجاز من 0 إلى 100
 
@@ -177,6 +180,15 @@ def create_tables():
             ))
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS course_id INTEGER"
+            ))
+            conn.execute(text(
+                "ALTER TABLE course_enrollments ADD COLUMN IF NOT EXISTS section_number VARCHAR(64)"
             ))
             conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_university_id "

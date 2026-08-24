@@ -55,25 +55,21 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   // دالة تسجيل الدخول
-  const login = async (username, password, role) => {
+  const login = async (username, password) => {
     try {
-      // إرسال بيانات الاعتماد إلى الخادم
       const response = await axios.post(`${API_BASE_URL}/login`, {
         username,
         password,
-        role
       });
       
       const { access_token } = response.data;
       setToken(access_token);
-      // حفظ الرمز في التخزين المحلي للاستمرارية
       localStorage.setItem('token', access_token);
       
-      // الحصول على معلومات المستخدم
       const userResponse = await axios.get(`${API_BASE_URL}/me`);
       setUser(userResponse.data);
       
-      return { success: true };
+      return { success: true, user: userResponse.data };
     } catch (error) {
       return { 
         success: false, 

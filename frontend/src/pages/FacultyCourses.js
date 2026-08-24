@@ -13,7 +13,9 @@ import {
   MoreVertical,
   Users,
   Globe,
-  Lock
+  Lock,
+  Upload,
+  FileSpreadsheet
 } from 'lucide-react';
 import './FacultyCourses.css';
 
@@ -51,6 +53,12 @@ const FacultyCourses = () => {
 
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeTimeout, setScrapeTimeout] = useState(null);
+  const [manageCourse, setManageCourse] = useState(null);
+  const [rosterFile, setRosterFile] = useState(null);
+  const [sectionNumber, setSectionNumber] = useState('');
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterResult, setRosterResult] = useState(null);
+  const [rosterList, setRosterList] = useState([]);
 
   // Extract YouTube thumbnail URL from YouTube video URL
   // Returns the main video thumbnail (not generic playlist thumbnail)
@@ -206,16 +214,59 @@ const FacultyCourses = () => {
   };
 
   const handleDelete = async (courseId) => {
-    if (!window.confirm('Are you sure you want to delete this course?')) {
-      return;
-    }
+    if (!window.confirm('Delete this course?')) return;
     try {
       await courseAPI.deleteCourse(courseId);
       loadCourses();
     } catch (error) {
       console.error('Error deleting course:', error);
-      alert('Failed to delete course. Please try again.');
+      alert('Failed to delete course.');
     }
+  };
+
+  const openManageCourse = async (course) => {
+    setManageCourse(course);
+    setRosterFile(null);
+    setRosterResult(null);
+    setSectionNumber('');
+    try {
+      const roster = await courseAPI.getCourseRoster(course.id);
+      setRosterList(roster || []);
+    } catch (e) {
+      setRosterList([]);
+    }
+  };
+
+  const handleRosterUpload = async () => {
+    if (!manageCourse || !rosterFile) return;
+    setRosterLoading(true);
+    setRosterResult(null);
+    try {
+      const res = await courseAPI.uploadCourseRoster(
+        manageCourse.id,
+        rosterFile,
+        sectionNumber || null
+      );
+      setRosterResult(res);
+      const roster = await courseAPI.getCourseRoster(manageCourse.id);
+      setRosterList(roster || []);
+      loadCourses();
+    } catch (e) {
+      alert(e?.response?.data?.detail || 'Roster upload failed');
+    } finally {
+      setRosterLoading(false);
+    }
+  };
+
+  const downloadRosterTemplate = () => {
+    const csv = '"University ID","Section Number"\n"441234567","101"\n"441234568","101"\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'section-roster-template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const resetForm = () => {
@@ -392,25 +443,102 @@ const FacultyCourses = () => {
                   </div>
                 </div>
 
-                <div className="course-card-footer">
-                  {course.course_url ? (
-                    <a
-                      href={course.course_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn btn-outline btn-sm btn-block"
-                    >
-                      <ExternalLink size={14} />
-                      Visit Course
-                    </a>
-                  ) : (
-                    <button className="btn btn-outline btn-sm btn-block" disabled>
-                      No Link Available
-                    </button>
-                  )}
+                <div className="course-card-footer course-actions-row">
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() => openManageCourse(course)}
+                  >
+                    <Users size={14} />
+                    Section Roster
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => navigate(`/chat?courseId=${course.id}`)}
+                  >
+                    <Upload size={14} />
+                    Upload Materials
+                  </button>
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {manageCourse && (
+          <div className="modal-overlay" onClick={() => setManageCourse(null)}>
+            <div className="modal-content roster-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Section Roster — {manageCourse.title}</h2>
+                <button className="modal-close" onClick={() => setManageCourse(null)}>×</button>
+              </div>
+              <p className="roster-help">
+                Upload student IDs provisioned by the administrator. The system validates each ID against
+                the master list and links students to this course — it does not create new accounts.
+              </p>
+              <div className="form-group">
+                <label>Default section number (optional)</label>
+                <input
+                  type="text"
+                  value={sectionNumber}
+                  onChange={(e) => setSectionNumber(e.target.value)}
+                  placeholder="e.g. 101"
+                />
+              </div>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={downloadRosterTemplate}>
+                <FileSpreadsheet size={14} /> Download template (CSV)
+              </button>
+              <div className="form-group">
+                <label>Excel file (.xlsx)</label>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(e) => setRosterFile(e.target.files?.[0] || null)}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!rosterFile || rosterLoading}
+                onClick={handleRosterUpload}
+              >
+                {rosterLoading ? 'Uploading…' : 'Upload & Link Students'}
+              </button>
+              {rosterResult && (
+                <div className="roster-result">
+                  <p>
+                    Linked <strong>{rosterResult.linked}</strong> · Skipped <strong>{rosterResult.skipped}</strong>
+                    {rosterResult.reindexed_students > 0 && (
+                      <> · Re-indexed materials for <strong>{rosterResult.reindexed_students}</strong> students</>
+                    )}
+                  </p>
+                  {rosterResult.errors?.length > 0 && (
+                    <ul>
+                      {rosterResult.errors.map((err, i) => (
+                        <li key={i}>
+                          Row {err.row}: {err.reason}
+                          {err.university_id ? ` (${err.university_id})` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <h3>Enrolled students ({rosterList.length})</h3>
+              {rosterList.length === 0 ? (
+                <p>No students linked yet.</p>
+              ) : (
+                <ul className="roster-list">
+                  {rosterList.map((r) => (
+                    <li key={r.id}>
+                      {r.university_id || r.student_id} — {r.student_name || 'Student'}
+                      {r.section_number ? ` · Section ${r.section_number}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
 

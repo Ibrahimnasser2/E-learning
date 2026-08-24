@@ -53,7 +53,7 @@ try:
         CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
         CourseEnrollmentRequest, CourseEnrollmentResponse,
         AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
-        AdminUploadUsersResponse,
+        AdminUploadUsersResponse, CourseRosterUploadResponse,
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
@@ -78,7 +78,7 @@ except ImportError:
         CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
         CourseEnrollmentRequest, CourseEnrollmentResponse,
         AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
-        AdminUploadUsersResponse,
+        AdminUploadUsersResponse, CourseRosterUploadResponse,
     )
     from api.rag_manager_simple import RAGManagerPGVector
 
@@ -397,17 +397,9 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
             detail="Invalid username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # تحقق من تطابق الدور
-    user_role = getattr(user.role, "value", str(user.role))
-    cred_role = getattr(user_credentials.role, "value", str(user_credentials.role))
-    if user_role != cred_role:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect role for this account",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
-    if cred_role == RoleEnum.admin.value:
+    user_role = getattr(user.role, "value", str(user.role))
+    if user_role == RoleEnum.admin.value:
         if (user.email or "").lower() != ADMIN_EMAIL.lower():
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -448,35 +440,87 @@ def _email_local_part(email: str) -> str:
     return email.split("@", 1)[0].strip()
 
 
+PROVISION_NAME_COLUMNS = ("Name", "الاسم", "name")
+PROVISION_UID_COLUMNS = ("University ID", "Student ID", "الرقم الجامعي", "university_id")
+PROVISION_PHONE_COLUMNS = ("Phone", "الهاتف", "Mobile", "phone")
+PROVISION_FACULTY_EMAIL_COLUMNS = ("البريد الجامعي", "University Email", "Faculty Email")
+PROVISION_EMAIL_COLUMNS = ("Email", "email")
+PROVISION_ACCOUNT_COLUMNS = ("Account", "account", "الحساب")
+PROVISION_SPEC_COLUMNS = ("Specialization", "التخصص", "specialization")
+
+
+def _excel_column(row, columns, candidates):
+    for col in candidates:
+        if col in columns:
+            val = row.get(col)
+            if val is not None and not pd.isna(val) and str(val).strip().lower() not in ("", "nan"):
+                return str(val).strip()
+    return None
+
+
+def _has_excel_column(columns, candidates):
+    return any(c in columns for c in candidates)
+
+
+def _normalize_university_id(raw: str) -> str:
+    value = str(raw).strip()
+    if value.endswith(".0"):
+        stem = value[:-2]
+        if stem.isdigit():
+            return stem
+    return value
+
+
 def _resolve_provisioned_user(row, df_columns):
     """
-    Build name, email, username, university_id, role from Excel row.
-    Accepts either Email (role inferred) or ID columns with auto-generated email.
+    Build name, email, username, university_id, role, phone from Excel row.
+
+    Students: الرقم الجامعي + الاسم + الهاتف
+      → email {id}@student.kk.edu.sa, password MANAMU{last4}
+
+    Faculty: الاسم + البريد الجامعي + الهاتف
+      → login = email local-part, password MANAMU{last4 of account}
     """
-    name = str(row.get("Name", "")).strip()
-    if not name or name.lower() == "nan":
-        return None, "Missing Name"
+    name = _excel_column(row, df_columns, PROVISION_NAME_COLUMNS)
+    if not name:
+        return None, "Missing Name (الاسم)"
 
-    specialization = None
-    if "Specialization" in df_columns and not pd.isna(row.get("Specialization")):
-        specialization = str(row["Specialization"]).strip() or None
+    specialization = _excel_column(row, df_columns, PROVISION_SPEC_COLUMNS)
 
-    raw_email = row.get("Email")
-    has_email = raw_email is not None and not pd.isna(raw_email) and str(raw_email).strip().lower() not in ("", "nan")
+    university_id_raw = _excel_column(row, df_columns, PROVISION_UID_COLUMNS)
+    university_id = _normalize_university_id(university_id_raw) if university_id_raw else None
 
-    raw_university_id = row.get("University ID")
-    has_uid = raw_university_id is not None and not pd.isna(raw_university_id) and str(raw_university_id).strip().lower() not in ("", "nan")
+    phone = _excel_column(row, df_columns, PROVISION_PHONE_COLUMNS)
+    if phone:
+        phone = _normalize_university_id(phone)
 
-    raw_account = row.get("Account")
-    has_account = raw_account is not None and not pd.isna(raw_account) and str(raw_account).strip().lower() not in ("", "nan")
+    faculty_email = _excel_column(row, df_columns, PROVISION_FACULTY_EMAIL_COLUMNS)
+    legacy_email = _excel_column(row, df_columns, PROVISION_EMAIL_COLUMNS)
+    account = _excel_column(row, df_columns, PROVISION_ACCOUNT_COLUMNS)
 
     email = None
     role = None
     username = None
-    university_id = None
 
-    if has_email:
-        email = str(raw_email).strip().lower()
+    if university_id:
+        if not phone:
+            return None, "Missing Phone (الهاتف) — required for students"
+        email = f"{university_id}@student.kk.edu.sa"
+        role = RoleEnum.student
+        username = university_id
+    elif faculty_email:
+        email = faculty_email.strip().lower()
+        if "@" not in email:
+            return None, "Invalid university email (البريد الجامعي)"
+        if not email.endswith("@kk.edu.sa"):
+            return None, "Faculty email must end with @kk.edu.sa"
+        if not phone:
+            return None, "Missing Phone (الهاتف) — required for faculty"
+        role = RoleEnum.faculty
+        username = _email_local_part(email)
+        university_id = username
+    elif legacy_email:
+        email = legacy_email.strip().lower()
         if "@" not in email:
             return None, "Invalid Email"
         role = _role_from_email(email)
@@ -486,22 +530,22 @@ def _resolve_provisioned_user(row, df_columns):
                 "or @kk.edu.sa for faculty."
             )
         username = _email_local_part(email)
-        university_id = str(raw_university_id).strip() if has_uid else username
-        if has_uid and university_id != username and role == RoleEnum.student:
-            return None, "University ID must match the email local-part for students"
-    elif has_uid:
-        university_id = str(raw_university_id).strip()
-        email = f"{university_id}@student.kk.edu.sa"
-        role = RoleEnum.student
-        username = university_id
-    elif has_account:
-        account = str(raw_account).strip()
+        university_id = username
+        if role == RoleEnum.faculty and not phone:
+            return None, "Missing Phone (الهاتف) — required for faculty"
+    elif account:
+        if not phone:
+            return None, "Missing Phone (الهاتف) — required for faculty"
+        account = account.strip()
         email = f"{account}@kk.edu.sa"
         role = RoleEnum.faculty
         username = account
         university_id = account
     else:
-        return None, "Provide Email, University ID (student), or Account (faculty)"
+        return None, (
+            "Provide student row (الرقم الجامعي + الهاتف) or faculty row "
+            "(البريد الجامعي + الهاتف)"
+        )
 
     if role == RoleEnum.admin or email == ADMIN_EMAIL.lower():
         return None, "Cannot provision administrative accounts via upload"
@@ -513,6 +557,7 @@ def _resolve_provisioned_user(row, df_columns):
         "university_id": university_id,
         "role": role,
         "specialization": specialization if role == RoleEnum.student else None,
+        "phone": phone,
     }, None
 
 
@@ -564,11 +609,12 @@ async def admin_upload_users(
     db: Session = Depends(get_db),
 ):
     """
-    Upload Excel with columns: Name, and one of:
-      - Email (role inferred: @student.kk.edu.sa = student, @kk.edu.sa = faculty)
-      - University ID (student — email auto-generated)
-      - Account (faculty — email auto-generated)
-    Optional: Specialization (students).
+    Upload Excel to provision users.
+
+    Students: الرقم الجامعي + الاسم + الهاتف (email & password auto).
+
+    Faculty: الاسم + البريد الجامعي + الهاتف (@kk.edu.sa, password auto).
+    Optional: Specialization / التخصص (students).
     """
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
@@ -579,12 +625,20 @@ async def admin_upload_users(
         raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
 
     columns = set(df.columns)
-    if "Name" not in columns:
-        raise HTTPException(status_code=400, detail="Excel must contain a Name column.")
-    if not ({"Email", "University ID", "Account"} & columns):
+    if not _has_excel_column(columns, PROVISION_NAME_COLUMNS):
+        raise HTTPException(status_code=400, detail="Excel must contain Name (الاسم).")
+    if not (
+        _has_excel_column(columns, PROVISION_UID_COLUMNS)
+        or _has_excel_column(columns, PROVISION_FACULTY_EMAIL_COLUMNS)
+        or _has_excel_column(columns, PROVISION_EMAIL_COLUMNS)
+        or _has_excel_column(columns, PROVISION_ACCOUNT_COLUMNS)
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Excel must contain Email, or University ID (students), or Account (faculty).",
+            detail=(
+                "Excel must contain student columns (الرقم الجامعي) or "
+                "faculty columns (البريد الجامعي)."
+            ),
         )
 
     added = 0
@@ -605,6 +659,7 @@ async def admin_upload_users(
             name = parsed["name"]
             mapped_role = parsed["role"]
             specialization = parsed["specialization"]
+            phone = parsed.get("phone")
 
             existing = db.query(User).filter(
                 or_(
@@ -626,6 +681,7 @@ async def admin_upload_users(
                 university_id=university_id,
                 display_name=name,
                 specialization=specialization,
+                phone=phone,
             )
             db.add(db_user)
             added += 1
@@ -1042,6 +1098,18 @@ async def send_message_stream(
     if not rag_manager:
         raise HTTPException(status_code=500, detail="RAG Manager not initialized")
 
+    if current_user.role == RoleEnum.student:
+        if not message_data.course_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Select a course before using the AI tutor.",
+            )
+        if not _student_enrolled_in_course(db, current_user.id, message_data.course_id):
+            raise HTTPException(
+                status_code=403,
+                detail="You are not enrolled in this course.",
+            )
+
     import json as _json
 
     top_k = message_data.top_k or 8
@@ -1160,6 +1228,7 @@ async def upload_file(
     file: UploadFile = File(...),
     target_roles: str = Form(...),  # Accept as string, parse as JSON
     specialization: str = Form(None),  # Specialization for students (optional)
+    course_id: int = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1172,7 +1241,15 @@ async def upload_file(
         if not isinstance(target_roles, list) or not target_roles or not all(r in allowed_roles for r in target_roles):
             raise HTTPException(status_code=400, detail="Invalid target roles")
         # If uploading for students, specialization is required
-        if "student" in target_roles and not specialization:
+        if "student" in target_roles:
+            if not course_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="course_id is required when uploading materials for students. Select a course first.",
+                )
+            course_obj = _get_owned_course(int(course_id), current_user, db)
+            specialization = specialization or course_obj.specialization
+        elif "student" in target_roles and not specialization:
             raise HTTPException(status_code=400, detail="Specialization is required when uploading for students")
     else:
         raise HTTPException(status_code=403, detail="You do not have permission to upload files")
@@ -1198,6 +1275,7 @@ async def upload_file(
             uploader_id=current_user.id,
             target_roles=target_roles,
             specialization=specialization if "student" in target_roles else None,
+            course_id=int(course_id) if course_id else None,
             filename=unique_filename,
             original_filename=file.filename,
             file_size=len(file_bytes),
@@ -1232,7 +1310,17 @@ async def upload_file(
             )
 
         for role in target_roles:
-            if role == "student" and specialization:
+            if role == "student" and course_id:
+                enrollment_rows = db.query(CourseEnrollment).filter(
+                    CourseEnrollment.course_id == int(course_id)
+                ).all()
+                users = [
+                    db.query(User).filter(User.id == e.student_id).first()
+                    for e in enrollment_rows
+                ]
+                users = [u for u in users if u]
+                print(f"👥 Indexing for {len(users)} enrolled students in course {course_id}")
+            elif role == "student" and specialization:
                 users = db.query(User).filter(
                     User.role == role,
                     User.specialization == specialization,
@@ -1274,12 +1362,22 @@ async def get_user_files(
     
     # Filter by specialization for students
     if current_user.role == "student":
-        files_query = files_query.filter(
-            or_(
-                UploadedFile.specialization == current_user.specialization,
-                UploadedFile.specialization.is_(None)  # Include files without specialization (for backward compatibility)
+        enrolled_course_ids = _student_enrolled_course_ids(db, current_user.id)
+        if enrolled_course_ids:
+            files_query = files_query.filter(
+                or_(
+                    UploadedFile.course_id.in_(enrolled_course_ids),
+                    and_(
+                        UploadedFile.course_id.is_(None),
+                        or_(
+                            UploadedFile.specialization == current_user.specialization,
+                            UploadedFile.specialization.is_(None),
+                        ),
+                    ),
+                )
             )
-        )
+        else:
+            files_query = files_query.filter(UploadedFile.id == -1)
     
     files = (
         files_query
@@ -1588,6 +1686,91 @@ async def scrape_metadata(url: str = Query(...)):
         logger.error(f"Error scraping metadata: {e}")
         raise HTTPException(status_code=500, detail=f"Error scraping metadata: {str(e)}")
 
+# ==================== Course workflow helpers ====================
+
+ROSTER_ID_COLUMNS = (
+    "University ID", "Student ID", "Student Id", "student_id", "university_id",
+    "الرقم الجامعي",
+)
+ROSTER_SECTION_COLUMNS = ("Section Number", "Section", "section_number")
+
+
+def _get_owned_course(course_id: int, faculty_user: User, db: Session) -> Course:
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if faculty_user.role != RoleEnum.faculty or course.faculty_id != faculty_user.id:
+        raise HTTPException(status_code=403, detail="You do not own this course")
+    return course
+
+
+def _find_student_by_university_id(db: Session, raw_id: str) -> Optional[User]:
+    student_id = str(raw_id).strip()
+    if not student_id or student_id.lower() == "nan":
+        return None
+    return db.query(User).filter(
+        User.role == RoleEnum.student,
+        or_(User.university_id == student_id, User.username == student_id),
+    ).first()
+
+
+def _roster_column(row, columns, candidates):
+    for col in candidates:
+        if col in columns:
+            val = row.get(col)
+            if val is not None and not pd.isna(val) and str(val).strip().lower() not in ("", "nan"):
+                return str(val).strip()
+    return None
+
+
+def _index_documents_for_users(rag_manager_instance, documents, file_paths, user_ids):
+    indexed = set()
+    for uid in user_ids:
+        if uid in indexed:
+            continue
+        try:
+            rag_manager_instance.index_documents(documents, uid, file_paths)
+            indexed.add(uid)
+        except Exception as e:
+            print(f"⚠️ Indexing failed for user {uid}: {e}")
+    return indexed
+
+
+def _reindex_course_materials_for_students(db: Session, course_id: int, student_user_ids: list) -> int:
+    global rag_manager
+    if not rag_manager or not student_user_ids:
+        return 0
+    files = db.query(UploadedFile).filter(UploadedFile.course_id == course_id).all()
+    total = 0
+    for db_file in files:
+        file_path = os.path.join(UPLOADS_DIR, db_file.filename)
+        if not os.path.exists(file_path) and db_file.file_content:
+            with open(file_path, "wb") as out:
+                out.write(db_file.file_content)
+        if not os.path.exists(file_path):
+            continue
+        documents = rag_manager.load_documents(file_paths=[file_path])
+        if not documents:
+            continue
+        indexed = _index_documents_for_users(rag_manager, documents, [file_path], student_user_ids)
+        total += len(indexed)
+    return total
+
+
+def _student_enrolled_in_course(db: Session, student_id: int, course_id: int) -> bool:
+    return db.query(CourseEnrollment).filter(
+        CourseEnrollment.student_id == student_id,
+        CourseEnrollment.course_id == course_id,
+    ).first() is not None
+
+
+def _student_enrolled_course_ids(db: Session, student_id: int) -> list:
+    rows = db.query(CourseEnrollment.course_id).filter(
+        CourseEnrollment.student_id == student_id
+    ).all()
+    return [r[0] for r in rows]
+
+
 # ==================== Course Management Endpoints ====================
 
 @app.post("/courses", response_model=CourseResponse)
@@ -1661,13 +1844,13 @@ async def get_my_courses(
             Course.faculty_id == current_user.id
         ).order_by(Course.created_at.desc()).all()
     elif current_user.role == "student":
-        # الطلاب يرون فقط الكورسات المطابقة لتخصصهم
-        if not current_user.specialization:
+        enrolled_ids = _student_enrolled_course_ids(db, current_user.id)
+        if not enrolled_ids:
             courses = []
         else:
             courses = db.query(Course).filter(
-                Course.specialization == current_user.specialization,
-                Course.is_active == "active"
+                Course.id.in_(enrolled_ids),
+                Course.is_active == "active",
             ).order_by(Course.created_at.desc()).all()
     else:
         courses = []
@@ -1748,6 +1931,7 @@ async def get_my_enrollments(
                 course_id=enrollment.course_id,
                 enrolled_at=enrollment.enrolled_at,
                 progress=enrollment.progress,
+                section_number=enrollment.section_number,
                 course=course_response
             ))
     
@@ -1920,56 +2104,134 @@ async def enroll_in_course(
     db: Session = Depends(get_db)
 ):
     """
-    تسجيل الطالب في كورس
+    Student self-enrollment is disabled — instructors add students via roster upload.
     """
-    if current_user.role != "student":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only students can enroll in courses"
-        )
-    
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Enrollment is managed by your instructor. Contact them to be added to the course section.",
+    )
+
+
+@app.get("/courses/{course_id}/roster", response_model=List[CourseEnrollmentResponse])
+async def get_course_roster(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
-    
-    # التحقق من التخصص
-    if course.specialization != current_user.specialization:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This course is not available for your specialization"
-        )
-    
-    # التحقق من عدم التسجيل مسبقاً
-    existing_enrollment = db.query(CourseEnrollment).filter(
-        CourseEnrollment.student_id == current_user.id,
+        raise HTTPException(status_code=404, detail="Course not found")
+    if current_user.role == RoleEnum.faculty and course.faculty_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not own this course")
+    if current_user.role not in (RoleEnum.faculty, RoleEnum.admin):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    enrollments = db.query(CourseEnrollment).filter(
         CourseEnrollment.course_id == course_id
-    ).first()
-    
-    if existing_enrollment:
+    ).order_by(CourseEnrollment.enrolled_at.desc()).all()
+
+    result = []
+    for en in enrollments:
+        student = db.query(User).filter(User.id == en.student_id).first()
+        result.append(CourseEnrollmentResponse(
+            id=en.id,
+            student_id=en.student_id,
+            course_id=en.course_id,
+            enrolled_at=en.enrolled_at,
+            progress=en.progress,
+            section_number=en.section_number,
+            student_name=(student.display_name or student.username) if student else None,
+            university_id=student.university_id if student else None,
+        ))
+    return result
+
+
+@app.post("/courses/{course_id}/upload-roster", response_model=CourseRosterUploadResponse)
+async def upload_course_roster(
+    course_id: int,
+    file: UploadFile = File(...),
+    section_number: str = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Instructor uploads section student IDs. Validates against admin master list;
+    links existing accounts to the course (does not create new users).
+    """
+    if current_user.role != RoleEnum.faculty:
+        raise HTTPException(status_code=403, detail="Only faculty can upload section rosters")
+    course = _get_owned_course(course_id, current_user, db)
+
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
+
+    try:
+        df = pd.read_excel(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
+
+    columns = set(df.columns)
+    if not any(c in columns for c in ROSTER_ID_COLUMNS):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You are already enrolled in this course"
+            status_code=400,
+            detail=f"Excel must contain a student ID column: {', '.join(ROSTER_ID_COLUMNS)}",
         )
-    
-    enrollment = CourseEnrollment(
-        student_id=current_user.id,
-        course_id=course_id,
-        progress=0
-    )
-    
-    db.add(enrollment)
-    db.commit()
-    db.refresh(enrollment)
-    
-    return CourseEnrollmentResponse(
-        id=enrollment.id,
-        student_id=enrollment.student_id,
-        course_id=enrollment.course_id,
-        enrolled_at=enrollment.enrolled_at,
-        progress=enrollment.progress
+
+    linked = 0
+    skipped = 0
+    errors = []
+    newly_linked_student_ids = []
+
+    for idx, row in df.iterrows():
+        row_num = int(idx) + 2
+        student_id_val = _roster_column(row, columns, ROSTER_ID_COLUMNS)
+        if not student_id_val:
+            errors.append({"row": row_num, "reason": "Missing student ID"})
+            continue
+
+        row_section = _roster_column(row, columns, ROSTER_SECTION_COLUMNS) or section_number
+
+        student = _find_student_by_university_id(db, student_id_val)
+        if not student:
+            errors.append({
+                "row": row_num,
+                "university_id": student_id_val,
+                "reason": "Student ID not found",
+            })
+            continue
+
+        existing = db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course_id,
+            CourseEnrollment.student_id == student.id,
+        ).first()
+        if existing:
+            if row_section and existing.section_number != row_section:
+                existing.section_number = row_section
+            skipped += 1
+            continue
+
+        enrollment = CourseEnrollment(
+            student_id=student.id,
+            course_id=course_id,
+            section_number=row_section,
+            progress=0,
+        )
+        db.add(enrollment)
+        linked += 1
+        newly_linked_student_ids.append(student.id)
+
+    if linked:
+        db.commit()
+    else:
+        db.rollback()
+
+    reindexed = _reindex_course_materials_for_students(db, course_id, newly_linked_student_ids)
+
+    return CourseRosterUploadResponse(
+        linked=linked,
+        skipped=skipped,
+        errors=errors,
+        reindexed_students=reindexed,
     )
 
 if __name__ == "__main__":

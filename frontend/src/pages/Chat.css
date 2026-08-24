@@ -1166,4 +1166,27 @@
   line-height: 1.4;
   word-break: break-word;
 }
+
+.course-context-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: #f8f9fb;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.course-context-bar label {
+  font-weight: 600;
+  font-size: 14px;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.course-context-bar select {
+  flex: 1;
+  max-width: 420px;
+}
  

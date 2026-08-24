@@ -23,26 +23,17 @@ const Login = () => {
     formState: { errors }  // أخطاء التحقق من صحة البيانات
   } = useForm();
 
-  const roles = [
-    { value: 'faculty', label: 'أعضاء هيئة التدريس (Faculty)' },
-    { value: 'student', label: 'الطلاب (Students)' },
-    { value: 'admin', label: 'الإدارة (Administrative)' },
-  ];
-  const [selectedRole, setSelectedRole] = useState('faculty');
-
-  // دالة معالجة إرسال نموذج تسجيل الدخول
   const onSubmit = async (data) => {
     setLoading(true);
     setError('');
 
-    // محاولة تسجيل الدخول باستخدام البيانات المدخلة
-    const result = await login(data.username, data.password, selectedRole);
+    const result = await login(data.username, data.password);
 
     if (result.success) {
-      const dest = selectedRole === 'admin' ? '/admin' : '/chat';
+      const role = result.user?.role;
+      const dest = role === 'admin' ? '/admin' : '/chat';
       navigate(dest);
     } else {
-      // في حالة الفشل، عرض رسالة الخطأ
       setError(result.error);
     }
 
@@ -113,22 +104,6 @@ const Login = () => {
             {errors.password && (
               <span className="error-text">{errors.password.message}</span>
             )}
-          </div>
-
-          {/* حقل اختيار الدور */}
-          <div className="form-group">
-            <label htmlFor="role">Role</label>
-            <select
-              id="role"
-              value={selectedRole}
-              onChange={e => setSelectedRole(e.target.value)}
-              className="role-select"
-              style={{ padding: '12px', borderRadius: '10px', border: '2px solid #bdc3c7', fontSize: '16px' }}
-            >
-              {roles.map(role => (
-                <option key={role.value} value={role.value}>{role.label}</option>
-              ))}
-            </select>
           </div>
 
           {/* زر تسجيل الدخول */}

@@ -4,11 +4,29 @@ import { useAuth } from '../context/AuthContext';
 import { adminAPI } from '../services/api';
 import './AdminConsole.css';
 
-const TEMPLATE_HEADERS = ['University ID', 'Name', 'Email', 'Specialization'];
-const TEMPLATE_SAMPLE = [
-  ['441234567', 'Ahmed Ali', '441234567@student.kk.edu.sa', 'Computer Science'],
-  ['sara.hassan', 'Dr. Sara Hassan', 'sara.hassan@kk.edu.sa', ''],
+const STUDENT_TEMPLATE_HEADERS = ['الرقم الجامعي', 'الاسم', 'الهاتف'];
+const STUDENT_TEMPLATE_SAMPLE = [
+  ['441234567', 'سارة محمد', '0501234567'],
+  ['441234568', 'عمر خالد', '0507654321'],
 ];
+
+const FACULTY_TEMPLATE_HEADERS = ['الاسم', 'البريد الجامعي', 'الهاتف'];
+const FACULTY_TEMPLATE_SAMPLE = [
+  ['د. أحمد علي', 'ahmed.ali@kk.edu.sa', '0501112233'],
+  ['د. فاطمة حسن', 'fatima.hassan@kk.edu.sa', '0504445566'],
+];
+
+const downloadCsv = (headers, sample, filename) => {
+  const rows = [headers, ...sample];
+  const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
 const AdminConsole = () => {
   const { user, logout } = useAuth();
@@ -37,16 +55,12 @@ const AdminConsole = () => {
     loadSummary();
   }, [user, navigate, loadSummary]);
 
-  const downloadTemplate = () => {
-    const rows = [TEMPLATE_HEADERS, ...TEMPLATE_SAMPLE];
-    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'manamu-users-template.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+  const downloadStudentTemplate = () => {
+    downloadCsv(STUDENT_TEMPLATE_HEADERS, STUDENT_TEMPLATE_SAMPLE, 'students-template.csv');
+  };
+
+  const downloadFacultyTemplate = () => {
+    downloadCsv(FACULTY_TEMPLATE_HEADERS, FACULTY_TEMPLATE_SAMPLE, 'faculty-template.csv');
   };
 
   const handleUpload = async () => {
@@ -115,8 +129,8 @@ const AdminConsole = () => {
         <section className="admin-panel">
           <h2>Provision Users from Excel</h2>
           <p className="admin-panel-desc">
-            Upload a spreadsheet to create student and faculty accounts. Role is detected automatically
-            from the email domain — no Role column needed.
+            Upload two separate Excel files: one for students and one for faculty.
+            Email and password are generated automatically for each file.
           </p>
 
           <div className="requirements-table-wrap">
@@ -124,52 +138,60 @@ const AdminConsole = () => {
               <thead>
                 <tr>
                   <th>Column</th>
-                  <th>Required</th>
+                  <th>Arabic</th>
+                  <th>For</th>
                   <th>Description</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
+                  <td>University ID</td>
+                  <td>الرقم الجامعي</td>
+                  <td>Students</td>
+                  <td>Login username · email → <code>{'{id}@student.kk.edu.sa'}</code></td>
+                </tr>
+                <tr>
                   <td>Name</td>
-                  <td>Yes</td>
+                  <td>الاسم</td>
+                  <td>All</td>
                   <td>Full display name</td>
                 </tr>
                 <tr>
-                  <td>Email</td>
-                  <td>Yes*</td>
-                  <td>
-                    <code>{'{id}@student.kk.edu.sa'}</code> → Student ·{' '}
-                    <code>{'{account}@kk.edu.sa'}</code> → Faculty
-                  </td>
+                  <td>Phone</td>
+                  <td>الهاتف</td>
+                  <td>All</td>
+                  <td>Contact number</td>
                 </tr>
                 <tr>
-                  <td>University ID</td>
-                  <td>Alt.</td>
-                  <td>Student only — email auto-generated as <code>{'{id}@student.kk.edu.sa'}</code></td>
-                </tr>
-                <tr>
-                  <td>Account</td>
-                  <td>Alt.</td>
-                  <td>Faculty only — email auto-generated as <code>{'{account}@kk.edu.sa'}</code></td>
+                  <td>University Email</td>
+                  <td>البريد الجامعي</td>
+                  <td>Faculty</td>
+                  <td>Must be <code>@kk.edu.sa</code> · login = local-part before @</td>
                 </tr>
                 <tr>
                   <td>Specialization</td>
+                  <td>التخصص</td>
+                  <td>Students</td>
                   <td>Optional</td>
-                  <td>For students only</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p className="password-note">
-            Role is inferred from email — students use <strong>@student.kk.edu.sa</strong>, faculty use{' '}
-            <strong>@kk.edu.sa</strong>. Initial password: <strong>MANAMU</strong> + last 4 characters of
-            University ID / account (e.g. <code>441234567</code> → <code>MANAMU4567</code>).
+            <strong>Students:</strong> password <strong>MANAMU</strong> + last 4 digits of university ID.
+            <strong> Faculty:</strong> password <strong>MANAMU</strong> + last 4 characters of email account
+            (e.g. <code>ahmed.ali@kk.edu.sa</code> → <code>MANAMU.ali</code>).
           </p>
 
-          <button type="button" className="admin-btn admin-btn-secondary" onClick={downloadTemplate}>
-            Download Template (CSV)
-          </button>
+          <div className="admin-template-actions">
+            <button type="button" className="admin-btn admin-btn-secondary" onClick={downloadStudentTemplate}>
+              Download Students Template
+            </button>
+            <button type="button" className="admin-btn admin-btn-secondary" onClick={downloadFacultyTemplate}>
+              Download Faculty Template
+            </button>
+          </div>
 
           <div
             className={`admin-dropzone ${dragActive ? 'active' : ''} ${file ? 'has-file' : ''}`}
