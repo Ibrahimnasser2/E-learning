@@ -35,6 +35,7 @@ try:
     from database import (
         get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment,
         create_tables, SessionLocal, ensure_system_users, ADMIN_EMAIL, RoleEnum,
+        clear_application_data,
     )
     from auth import (
         get_password_hash,
@@ -62,6 +63,7 @@ except ImportError:
     from api.database import (
         get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment,
         create_tables, SessionLocal, ensure_system_users, ADMIN_EMAIL, RoleEnum,
+        clear_application_data,
     )
     from api.auth import (
         get_password_hash,
@@ -586,6 +588,20 @@ async def admin_users_summary(
         faculty=faculty,
         admins=admins,
     )
+
+
+@app.post("/admin/clear-database")
+async def admin_clear_database(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Wipe all app data and re-seed Maha admin. Admin only."""
+    admin = clear_application_data(db, keep_admin=True)
+    return {
+        "message": "Database cleared. Administrative account restored.",
+        "admin_email": ADMIN_EMAIL,
+        "admin_id": admin.id if admin else None,
+    }
 
 
 @app.get("/admin/users", response_model=AdminUserListResponse)

@@ -138,48 +138,75 @@ class CourseEnrollment(Base):
     course = relationship("Course", back_populates="enrollments")
 
 def ensure_system_users(db):
-    """Seed or sync the sole Administrative account."""
+    """
+    Always ensure the sole Administrative account (Maha) exists and is synced.
+    Runs on every API startup — creates or repairs eng-maha@gmail.com / maha.
+    """
     try:
         from auth import get_password_hash
     except ImportError:
         from api.auth import get_password_hash
 
     admin_password = os.getenv("ADMIN_PASSWORD", ADMIN_DEFAULT_PASSWORD)
+    password_hash = get_password_hash(admin_password)
 
     existing = db.query(User).filter(User.email == ADMIN_EMAIL).first()
+    if not existing:
+        existing = db.query(User).filter(User.username == ADMIN_USERNAME).first()
+
     if existing:
-        changed = False
-        if existing.role != RoleEnum.admin:
-            existing.role = RoleEnum.admin
-            changed = True
-        if existing.username != ADMIN_USERNAME:
-            existing.username = ADMIN_USERNAME
-            changed = True
-        existing.password_hash = get_password_hash(admin_password)
-        changed = True
-        if changed:
-            db.commit()
-            print(f"✅ Synced administrative account: {ADMIN_EMAIL}")
+        existing.email = ADMIN_EMAIL
+        existing.username = ADMIN_USERNAME
+        existing.role = RoleEnum.admin
+        existing.password_hash = password_hash
+        if not existing.display_name:
+            existing.display_name = "MANAMU Administrator"
+        db.commit()
+        print(f"Administrative account ready: {ADMIN_EMAIL} / {ADMIN_USERNAME}")
         return existing
 
-    # Enforce single admin — do not create if another admin exists
-    other_admin = db.query(User).filter(User.role == RoleEnum.admin).first()
-    if other_admin:
-        print(f"⚠️ Admin already exists ({other_admin.email}); skipping seed.")
-        return other_admin
+    # Demote any other admin rows so Maha is the sole admin identity
+    for other in db.query(User).filter(User.role == RoleEnum.admin).all():
+        other.role = RoleEnum.faculty
+        print(f"Demoted non-Maha admin to faculty: {other.email}")
 
     admin_user = User(
         username=ADMIN_USERNAME,
         email=ADMIN_EMAIL,
-        password_hash=get_password_hash(admin_password),
+        password_hash=password_hash,
         role=RoleEnum.admin,
         display_name="MANAMU Administrator",
     )
     db.add(admin_user)
     db.commit()
     db.refresh(admin_user)
-    print(f"✅ Seeded administrative account: {ADMIN_EMAIL}")
+    print(f"Seeded administrative account: {ADMIN_EMAIL}")
     return admin_user
+
+
+def clear_application_data(db, keep_admin: bool = True):
+    """
+    Wipe app tables (users/courses/files/chat/enrollments) and optional RAG tables.
+    Always re-seeds Maha afterwards when keep_admin=True.
+    """
+    # Order matters for FKs — use TRUNCATE CASCADE where possible
+    with engine.begin() as conn:
+        for table in (
+            "chat_messages",
+            "course_enrollments",
+            "uploaded_files",
+            "courses",
+            "users",
+        ):
+            conn.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
+        # Vector store (if present)
+        conn.execute(text("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS langchain_pg_collection CASCADE"))
+    print("Cleared application database tables")
+    if keep_admin:
+        return ensure_system_users(db)
+    return None
+
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
