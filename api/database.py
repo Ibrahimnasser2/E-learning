@@ -35,6 +35,7 @@ class RoleEnum(str, PyEnum):
 
 ADMIN_EMAIL = "eng-maha@gmail.com"
 ADMIN_USERNAME = "maha"
+ADMIN_DEFAULT_PASSWORD = "maha1234"
 
 class User(Base):
     __tablename__ = "users"
@@ -131,22 +132,28 @@ class CourseEnrollment(Base):
     course = relationship("Course", back_populates="enrollments")
 
 def ensure_system_users(db):
-    """Seed the sole Administrative account if missing."""
+    """Seed or sync the sole Administrative account."""
     try:
         from auth import get_password_hash
     except ImportError:
         from api.auth import get_password_hash
 
-    admin_password = os.getenv("ADMIN_PASSWORD")
-    if not admin_password:
-        print("⚠️ ADMIN_PASSWORD not set — administrative account will not be created.")
-        return None
+    admin_password = os.getenv("ADMIN_PASSWORD", ADMIN_DEFAULT_PASSWORD)
 
     existing = db.query(User).filter(User.email == ADMIN_EMAIL).first()
     if existing:
+        changed = False
         if existing.role != RoleEnum.admin:
             existing.role = RoleEnum.admin
+            changed = True
+        if existing.username != ADMIN_USERNAME:
+            existing.username = ADMIN_USERNAME
+            changed = True
+        existing.password_hash = get_password_hash(admin_password)
+        changed = True
+        if changed:
             db.commit()
+            print(f"✅ Synced administrative account: {ADMIN_EMAIL}")
         return existing
 
     # Enforce single admin — do not create if another admin exists

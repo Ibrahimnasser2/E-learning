@@ -77,17 +77,17 @@ DATABASE_URL=postgresql://...
 PGVECTOR_CONNECTION_STRING=postgresql://...
 OPENAI_API_KEY=...
 SECRET_KEY=...
-ADMIN_PASSWORD=<strong-password-for-admin-account>
+ADMIN_PASSWORD=maha1234
 ```
 
-On first startup, the API seeds the sole **Administrative** account:
+On startup, the API seeds or syncs the sole **Administrative** account:
 
 | Field | Value |
 |-------|--------|
 | Email | `eng-maha@gmail.com` |
 | Username | `maha` |
 | Role | Administrative (`admin`) |
-| Password | value of `ADMIN_PASSWORD` |
+| Password | `maha1234` (override with `ADMIN_PASSWORD` env) |
 
 ```bash
 python main.py
@@ -104,7 +104,7 @@ npm start
 
 ### Administrative (MANAMU staff)
 
-1. Log in at `/login` with role **Administrative**, username `maha`, and your `ADMIN_PASSWORD`.
+1. Log in at `/login` with username `maha` and password `maha1234`.
 2. Open **Admin Console** (`/admin`).
 3. Download **two separate templates** (Students + Faculty) and save as `.xlsx`:
    - **Students file:** `الرقم الجامعي`, `الاسم`, `الهاتف`
