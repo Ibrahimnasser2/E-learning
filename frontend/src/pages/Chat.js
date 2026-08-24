@@ -496,7 +496,7 @@ const Chat = () => {
           {/* Hide settings button for student/general_inquiry */}
           <div className="user-info">
             <span className="username">
-              Welcome, {user?.display_name || user?.username}!
+              مرحباً، {user?.display_name || user?.username}!
             </span>
             <button onClick={logout} className="logout-button">
               Logout
