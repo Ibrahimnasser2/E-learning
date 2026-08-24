@@ -4,6 +4,7 @@ import { courseAPI } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
+  CheckCircle,
   Clock,
   Search,
   Filter,
