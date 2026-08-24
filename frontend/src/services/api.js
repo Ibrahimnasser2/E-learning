@@ -282,6 +282,27 @@ export const fileAPI = {
   }
 };
 
+export const adminAPI = {
+  getSummary: async () => {
+    const response = await axios.get(`${API_BASE_URL}/admin/users/summary`);
+    return response.data;
+  },
+  listUsers: async (page = 1, pageSize = 50) => {
+    const response = await axios.get(`${API_BASE_URL}/admin/users`, {
+      params: { page, page_size: pageSize },
+    });
+    return response.data;
+  },
+  uploadUsersFile: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await axios.post(`${API_BASE_URL}/admin/upload-users`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+};
+
 // Auth API interface
 export const authAPI = {
   login: async (username, password, role) => {

@@ -32,12 +32,16 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Local imports (works with Root Directory=api on Render, and with uvicorn api.main:app)
 try:
-    from database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables, SessionLocal
+    from database import (
+        get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment,
+        create_tables, SessionLocal, ensure_system_users, ADMIN_EMAIL, RoleEnum,
+    )
     from auth import (
         get_password_hash,
         verify_password,
         create_access_token,
         get_current_user,
+        require_admin,
         authenticate_user,
         ACCESS_TOKEN_EXPIRE_MINUTES,
     )
@@ -48,15 +52,21 @@ try:
         ChatResponse, DocumentUploadResponse, IndexStats,
         CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
         CourseEnrollmentRequest, CourseEnrollmentResponse,
+        AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
+        AdminUploadUsersResponse,
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
-    from api.database import get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment, create_tables, SessionLocal
+    from api.database import (
+        get_db, User, ChatMessage, UploadedFile, Course, CourseEnrollment,
+        create_tables, SessionLocal, ensure_system_users, ADMIN_EMAIL, RoleEnum,
+    )
     from api.auth import (
         get_password_hash,
         verify_password,
         create_access_token,
         get_current_user,
+        require_admin,
         authenticate_user,
         ACCESS_TOKEN_EXPIRE_MINUTES,
     )
@@ -67,6 +77,8 @@ except ImportError:
         ChatResponse, DocumentUploadResponse, IndexStats,
         CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
         CourseEnrollmentRequest, CourseEnrollmentResponse,
+        AdminUserListResponse, AdminUserListItem, AdminUserSummaryResponse,
+        AdminUploadUsersResponse,
     )
     from api.rag_manager_simple import RAGManagerPGVector
 
@@ -91,6 +103,14 @@ async def lifespan(app: FastAPI):
     global rag_manager
     # إنشاء جداول قاعدة البيانات
     create_tables()
+    try:
+        seed_db = SessionLocal()
+        try:
+            ensure_system_users(seed_db)
+        finally:
+            seed_db.close()
+    except Exception as e:
+        print(f"⚠️ ensure_system_users failed: {e}")
     
     try:
         rag_manager = RAGManagerPGVector()
@@ -149,43 +169,11 @@ class GeneralChatResponse(BaseModel):
 # نقاط نهاية المصادقة
 @app.post("/register", response_model=UserResponse)
 async def register(user_data: UserRegister, db: Session = Depends(get_db)):
-    print("hemaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:", user_data)
-    print("Received user_data:", user_data)
-    """
-    تسجيل مستخدم جديد
-    يتحقق من عدم وجود اسم المستخدم أو البريد الإلكتروني مسبقاً
-    """
-    # التحقق من وجود اسم المستخدم مسبقاً
-    existing_user = db.query(User).filter(User.username == user_data.username).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
-    
-    # التحقق من وجود البريد الإلكتروني مسبقاً
-    existing_email = db.query(User).filter(User.email == user_data.email).first()
-    if existing_email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # إنشاء مستخدم جديد مع تشفير كلمة المرور
-    hashed_password = get_password_hash(user_data.password)
-    db_user = User(
-        username=user_data.username,
-        email=user_data.email,
-        password_hash=hashed_password,
-        role=user_data.role,  # Ensure role is saved
-        specialization=user_data.specialization if user_data.specialization else None
+    """Public registration is disabled — users are provisioned by the administrator."""
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Registration is disabled. Contact your administrator.",
     )
-    
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    
-    return UserResponse.from_orm(db_user)
 
 @app.post("/chat/general", response_model=GeneralChatResponse)
 async def general_chat(request: GeneralChatRequest):
@@ -410,12 +398,22 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
     # تحقق من تطابق الدور
-    if user.role != user_credentials.role:
+    user_role = getattr(user.role, "value", str(user.role))
+    cred_role = getattr(user_credentials.role, "value", str(user_credentials.role))
+    if user_role != cred_role:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect role for this account",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if cred_role == RoleEnum.admin.value:
+        if (user.email or "").lower() != ADMIN_EMAIL.lower():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized administrative account",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -428,6 +426,151 @@ async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """الحصول على معلومات المستخدم الحالي"""
     return UserResponse.from_orm(current_user)
+
+
+def _normalize_provisioned_role(raw_role: str):
+    """Map Excel role labels to internal RoleEnum values."""
+    if raw_role is None or (isinstance(raw_role, float) and pd.isna(raw_role)):
+        return None
+    value = str(raw_role).strip().lower()
+    if value in ("student", "students", "طالب", "طلاب"):
+        return RoleEnum.student
+    if value in ("instructor", "faculty", "teacher", "عضو هيئة تدريس", "مدرس"):
+        return RoleEnum.faculty
+    if value in ("admin", "administrative", "administrator", "إدارة"):
+        return None  # never provision admin via Excel
+    return None
+
+
+def _provisioned_password(university_id: str) -> str:
+    uid = str(university_id).strip()
+    suffix = uid[-4:] if len(uid) >= 4 else uid
+    return f"MANAMU{suffix}"
+
+
+@app.get("/admin/users/summary", response_model=AdminUserSummaryResponse)
+async def admin_users_summary(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    total = db.query(User).count()
+    students = db.query(User).filter(User.role == RoleEnum.student).count()
+    faculty = db.query(User).filter(User.role == RoleEnum.faculty).count()
+    admins = db.query(User).filter(User.role == RoleEnum.admin).count()
+    return AdminUserSummaryResponse(
+        total=total,
+        students=students,
+        faculty=faculty,
+        admins=admins,
+    )
+
+
+@app.get("/admin/users", response_model=AdminUserListResponse)
+async def admin_list_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    q = db.query(User).order_by(User.created_at.desc())
+    total = q.count()
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    return AdminUserListResponse(
+        users=[AdminUserListItem.from_orm(u) for u in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@app.post("/admin/upload-users", response_model=AdminUploadUsersResponse)
+async def admin_upload_users(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload Excel with columns: University ID, Name, Email, Role.
+    Optional: Specialization (for students).
+    """
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
+
+    try:
+        df = pd.read_excel(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
+
+    required_columns = {"University ID", "Name", "Email", "Role"}
+    if not required_columns.issubset(set(df.columns)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Excel must contain columns: {', '.join(sorted(required_columns))}",
+        )
+
+    added = 0
+    skipped = 0
+    errors = []
+
+    for idx, row in df.iterrows():
+        row_num = int(idx) + 2  # header is row 1
+        try:
+            university_id = str(row["University ID"]).strip()
+            name = str(row["Name"]).strip()
+            email = str(row["Email"]).strip().lower()
+            role_raw = row["Role"]
+            specialization = None
+            if "Specialization" in df.columns and not pd.isna(row.get("Specialization")):
+                specialization = str(row["Specialization"]).strip() or None
+
+            if not university_id or university_id.lower() == "nan":
+                errors.append({"row": row_num, "reason": "Missing University ID"})
+                continue
+            if not name or name.lower() == "nan":
+                errors.append({"row": row_num, "reason": "Missing Name"})
+                continue
+            if not email or email == "nan" or "@" not in email:
+                errors.append({"row": row_num, "reason": "Invalid Email"})
+                continue
+
+            mapped_role = _normalize_provisioned_role(role_raw)
+            if mapped_role is None:
+                errors.append({"row": row_num, "reason": f"Invalid or forbidden Role: {role_raw}"})
+                continue
+
+            username = university_id
+            existing = db.query(User).filter(
+                or_(
+                    User.username == username,
+                    User.email == email,
+                    User.university_id == university_id,
+                )
+            ).first()
+            if existing:
+                skipped += 1
+                continue
+
+            password = _provisioned_password(university_id)
+            db_user = User(
+                username=username,
+                email=email,
+                password_hash=get_password_hash(password),
+                role=mapped_role,
+                university_id=university_id,
+                display_name=name,
+                specialization=specialization if mapped_role == RoleEnum.student else None,
+            )
+            db.add(db_user)
+            added += 1
+        except Exception as e:
+            errors.append({"row": row_num, "reason": str(e)})
+
+    if added:
+        db.commit()
+    else:
+        db.rollback()
+
+    return AdminUploadUsersResponse(added=added, skipped=skipped, errors=errors)
 
 # نقاط نهاية المحادثة (محمية)
 @app.get("/chat", response_model=ChatHistoryResponse)

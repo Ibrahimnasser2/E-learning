@@ -12,6 +12,7 @@ This project is an intelligent chatbot application that uses RAG (Retrieval-Augm
 
 ### Key Features:
 - ✅ Secure authentication system using JWT
+- ✅ **Administrative provisioning** — no public sign-up; admin uploads users via Excel
 - ✅ File upload and management (PDF)
 - ✅ Document indexing for semantic search
 - ✅ Intelligent chat with AI bot
@@ -67,6 +68,28 @@ python setup_database_windows.py
 ```bash
 cd api
 pip install -r requirements.txt
+```
+
+Create `api/.env` with at least:
+
+```
+DATABASE_URL=postgresql://...
+PGVECTOR_CONNECTION_STRING=postgresql://...
+OPENAI_API_KEY=...
+SECRET_KEY=...
+ADMIN_PASSWORD=<strong-password-for-admin-account>
+```
+
+On first startup, the API seeds the sole **Administrative** account:
+
+| Field | Value |
+|-------|--------|
+| Email | `eng-maha@gmail.com` |
+| Username | `maha` |
+| Role | Administrative (`admin`) |
+| Password | value of `ADMIN_PASSWORD` |
+
+```bash
 python main.py
 ```
 
@@ -79,10 +102,19 @@ npm start
 
 ## Usage
 
-1. **Registration**: Create a new account or log in
-2. **Upload Documents**: Upload PDF files for indexing
-3. **Chat**: Start a conversation with the AI bot
-4. **Management**: Review chat history and uploaded files
+### Administrative (MANAMU staff)
+
+1. Log in at `/login` with role **Administrative**, username `maha`, and your `ADMIN_PASSWORD`.
+2. Open **Admin Console** (`/admin`).
+3. Download the CSV template and fill columns: **University ID**, **Name**, **Email**, **Role** (`Student` or `Instructor`), optional **Specialization**.
+4. Upload the Excel file (`.xlsx` / `.xls`).
+5. Provisioned users log in with **University ID** as username and initial password `MANAMU` + last 4 digits of their ID (e.g. `MANAMU4567`).
+
+### Faculty & students
+
+1. Log in with credentials provisioned by the administrator (public registration is disabled).
+2. **Faculty**: upload course PDFs and manage courses.
+3. **Students**: chat with the AI tutor using indexed materials.
 
 ## Security
 
@@ -90,6 +122,8 @@ npm start
 - JWT tokens for sessions
 - User data isolation
 - Endpoint protection
+- Single fixed admin email (`eng-maha@gmail.com`); only one administrative account
+- `POST /register` disabled — users created only via admin Excel upload
 
 ## Contributing
 

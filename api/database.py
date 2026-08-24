@@ -31,6 +31,10 @@ Base = declarative_base()
 class RoleEnum(str, PyEnum):
     faculty = "faculty"
     student = "student"
+    admin = "admin"
+
+ADMIN_EMAIL = "eng-maha@gmail.com"
+ADMIN_USERNAME = "maha"
 
 class User(Base):
     __tablename__ = "users"
@@ -42,6 +46,8 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     role = Column(SqlEnum(RoleEnum), nullable=False)
     specialization = Column(String(255), nullable=True)  # التخصص للطلاب
+    university_id = Column(String(64), unique=True, index=True, nullable=True)
+    display_name = Column(String(255), nullable=True)
 
     chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     uploaded_files = relationship(
@@ -122,20 +128,69 @@ class CourseEnrollment(Base):
     course = relationship("Course", back_populates="enrollments")
 
 def ensure_system_users(db):
-    """Create system users if they don't exist"""
-    # No longer need system users since we removed general_inquiry
-    return None
+    """Seed the sole Administrative account if missing."""
+    try:
+        from auth import get_password_hash
+    except ImportError:
+        from api.auth import get_password_hash
+
+    admin_password = os.getenv("ADMIN_PASSWORD")
+    if not admin_password:
+        print("⚠️ ADMIN_PASSWORD not set — administrative account will not be created.")
+        return None
+
+    existing = db.query(User).filter(User.email == ADMIN_EMAIL).first()
+    if existing:
+        if existing.role != RoleEnum.admin:
+            existing.role = RoleEnum.admin
+            db.commit()
+        return existing
+
+    # Enforce single admin — do not create if another admin exists
+    other_admin = db.query(User).filter(User.role == RoleEnum.admin).first()
+    if other_admin:
+        print(f"⚠️ Admin already exists ({other_admin.email}); skipping seed.")
+        return other_admin
+
+    admin_user = User(
+        username=ADMIN_USERNAME,
+        email=ADMIN_EMAIL,
+        password_hash=get_password_hash(admin_password),
+        role=RoleEnum.admin,
+        display_name="MANAMU Administrator",
+    )
+    db.add(admin_user)
+    db.commit()
+    db.refresh(admin_user)
+    print(f"✅ Seeded administrative account: {ADMIN_EMAIL}")
+    return admin_user
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
-    # Add durable file storage column if missing (create_all won't alter existing tables)
     try:
         with engine.begin() as conn:
             conn.execute(text(
                 "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS file_content BYTEA"
             ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS university_id VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_university_id "
+                "ON users (university_id) WHERE university_id IS NOT NULL"
+            ))
+            # Postgres enum migration for admin role
+            conn.execute(text(
+                "DO $$ BEGIN "
+                "ALTER TYPE roleenum ADD VALUE IF NOT EXISTS 'admin'; "
+                "EXCEPTION WHEN duplicate_object THEN NULL; "
+                "END $$;"
+            ))
     except Exception as e:
-        print(f"⚠️ Could not ensure file_content column: {e}")
+        print(f"⚠️ Schema migration warning: {e}")
 
 def get_db():
     db = SessionLocal()

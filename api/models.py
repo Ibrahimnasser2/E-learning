@@ -7,6 +7,7 @@ from enum import Enum as PyEnum
 class RoleEnum(str, PyEnum):
     faculty = "faculty"
     student = "student"
+    admin = "admin"
 
 class UserRegister(BaseModel):
     username: str
@@ -27,9 +28,41 @@ class UserResponse(BaseModel):
     created_at: datetime
     role: RoleEnum
     specialization: Optional[str] = None
+    university_id: Optional[str] = None
+    display_name: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class AdminUserListItem(BaseModel):
+    id: int
+    username: str
+    email: str
+    role: RoleEnum
+    university_id: Optional[str] = None
+    display_name: Optional[str] = None
+    specialization: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AdminUserListResponse(BaseModel):
+    users: List[AdminUserListItem]
+    total: int
+    page: int
+    page_size: int
+
+class AdminUserSummaryResponse(BaseModel):
+    total: int
+    students: int
+    faculty: int
+    admins: int
+
+class AdminUploadUsersResponse(BaseModel):
+    added: int
+    skipped: int
+    errors: List[dict]
 
 class Token(BaseModel):
     access_token: str

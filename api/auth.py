@@ -6,9 +6,9 @@ from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 try:
-    from database import get_db, User
+    from database import get_db, User, ADMIN_EMAIL, RoleEnum
 except ImportError:
-    from api.database import get_db, User
+    from api.database import get_db, User, ADMIN_EMAIL, RoleEnum
 import os
 from dotenv import load_dotenv
 from pathlib import Path
@@ -60,6 +60,21 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         raise credentials_exception
 
     return user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    role_value = getattr(current_user.role, "value", str(current_user.role))
+    if role_value != RoleEnum.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative access required.",
+        )
+    if (current_user.email or "").lower() != ADMIN_EMAIL.lower():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Unauthorized administrative account.",
+        )
+    return current_user
 
 def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
     user = db.query(User).filter(User.username == username).first()

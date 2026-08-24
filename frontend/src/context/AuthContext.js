@@ -83,25 +83,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   // دالة التسجيل
-  const register = async (username, email, password, role, specialization = null) => {
-    try {
-      // إرسال بيانات التسجيل إلى الخادم
-      const response = await axios.post(`${API_BASE_URL}/register`, {
-        username,
-        email,
-        password,
-        role,
-        specialization
-      });
-      
-      return { success: true, user: response.data };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.detail || 'Registration failed' 
-      };
-    }
-  };
+  const register = async () => ({
+    success: false,
+    error: 'Registration is disabled. Contact your administrator.',
+  });
 
   // دالة تسجيل الخروج
   const logout = () => {

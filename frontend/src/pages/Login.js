@@ -1,6 +1,6 @@
 // استيراد المكتبات المطلوبة لصفحة تسجيل الدخول
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useForm } from 'react-hook-form';
 import './Auth.css';
@@ -26,6 +26,7 @@ const Login = () => {
   const roles = [
     { value: 'faculty', label: 'أعضاء هيئة التدريس (Faculty)' },
     { value: 'student', label: 'الطلاب (Students)' },
+    { value: 'admin', label: 'الإدارة (Administrative)' },
   ];
   const [selectedRole, setSelectedRole] = useState('faculty');
 
@@ -38,8 +39,8 @@ const Login = () => {
     const result = await login(data.username, data.password, selectedRole);
 
     if (result.success) {
-      // في حالة النجاح، الانتقال إلى صفحة المحادثة
-      navigate('/chat');
+      const dest = selectedRole === 'admin' ? '/admin' : '/chat';
+      navigate(dest);
     } else {
       // في حالة الفشل، عرض رسالة الخطأ
       setError(result.error);
@@ -140,12 +141,9 @@ const Login = () => {
           </button>
         </form>
 
-        {/* رابط التسجيل للمستخدمين الجدد */}
-        <div className="auth-footer">
-          <p>
-            Don't have an account? <Link to="/register">Create one here</Link>
-          </p>
-        </div>
+        <p className="auth-description" style={{ marginTop: '1.5rem', fontSize: '0.9rem', opacity: 0.85 }}>
+          New accounts are provisioned by the administrator. Contact MANAMU administration if you need access.
+        </p>
       </div>
     </div>
   );
