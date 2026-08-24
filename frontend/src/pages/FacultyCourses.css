@@ -641,8 +641,34 @@
 .roster-help {
   color: #64748b;
   font-size: 14px;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
   line-height: 1.5;
+}
+
+.roster-format-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.65rem 0.85rem;
+  margin-bottom: 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.roster-format-box strong {
+  color: #0f172a;
+}
+
+.roster-format-box span {
+  background: #0f2038;
+  color: #fff;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
 }
 
 .roster-result {

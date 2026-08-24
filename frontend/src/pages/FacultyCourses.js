@@ -259,7 +259,13 @@ const FacultyCourses = () => {
   };
 
   const downloadRosterTemplate = () => {
-    const csv = '"University ID","Section Number"\n"441234567","101"\n"441234568","101"\n';
+    const rows = [
+      ['الرقم الجامعي', 'رقم الشعبة'],
+      ['441234567', '101'],
+      ['441234568', '101'],
+      ['441234569', '102'],
+    ];
+    const csv = '\uFEFF' + rows.map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -474,9 +480,15 @@ const FacultyCourses = () => {
                 <button className="modal-close" onClick={() => setManageCourse(null)}>×</button>
               </div>
               <p className="roster-help">
-                Upload student IDs provisioned by the administrator. The system validates each ID against
-                the master list and links students to this course — it does not create new accounts.
+                Upload student university IDs already provisioned by the administrator.
+                Each ID is validated against the master list — unknown IDs show{' '}
+                <strong>Student ID not found</strong>. Section number is optional.
               </p>
+              <div className="roster-format-box">
+                <strong>Excel columns:</strong>
+                <span>الرقم الجامعي</span>
+                <span>رقم الشعبة (optional)</span>
+              </div>
               <div className="form-group">
                 <label>Default section number (optional)</label>
                 <input

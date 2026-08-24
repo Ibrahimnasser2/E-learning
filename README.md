@@ -117,7 +117,7 @@ npm start
 
 1. Log in with faculty credentials provisioned by the administrator.
 2. Open **My Courses** and create a course (title, specialization, etc.).
-3. Click **Section Roster** on a course — upload an Excel file with **University ID** / **Student ID** (optional **Section Number**). IDs must exist in the admin master list; unknown IDs show **Student ID not found**.
+3. Click **Section Roster** — upload `section-roster.xlsx` with **الرقم الجامعي** (and optional **رقم الشعبة**). Sample: `test-data/section-roster.xlsx`
 4. Click **Upload Materials** — opens Chat with that course selected. Upload PDFs **for students**; materials are indexed only for students on the roster.
 5. Students in that section can open **Chat**, pick the course, and use the AI tutor.
 

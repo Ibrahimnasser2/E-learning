@@ -1692,7 +1692,10 @@ ROSTER_ID_COLUMNS = (
     "University ID", "Student ID", "Student Id", "student_id", "university_id",
     "الرقم الجامعي",
 )
-ROSTER_SECTION_COLUMNS = ("Section Number", "Section", "section_number")
+ROSTER_SECTION_COLUMNS = (
+    "Section Number", "Section", "section_number",
+    "رقم الشعبة", "رقم القسم",
+)
 
 
 def _get_owned_course(course_id: int, faculty_user: User, db: Session) -> Course:
