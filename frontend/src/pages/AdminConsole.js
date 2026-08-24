@@ -117,7 +117,9 @@ const AdminConsole = () => {
             </div>
           </div>
           <div className="admin-header-actions">
-            <span className="admin-user-badge">{user.email}</span>
+            <span className="admin-user-badge">
+              مرحباً، {user?.display_name || user?.username || 'Admin'}!
+            </span>
             <button type="button" className="admin-btn admin-btn-outline" onClick={handleLogout}>
               <LogOut size={16} />
               Sign Out
