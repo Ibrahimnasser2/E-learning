@@ -282,9 +282,10 @@ class RAGManagerPGVector:
             }
         return {"files_indexed": 0, "message": "No documents could be loaded from files"}
 
-    def query(self, query, user_id, top_k=5):
+    def query(self, query, user_id, top_k=5, allowed_sources=None):
         """
         البحث في الوثائق المفهرسة
+        allowed_sources: optional set/list of file paths — chunks from other sources are excluded
         """
         try:
             clean_query = (query or "").replace('"', "").replace("'", "").strip()
@@ -294,25 +295,33 @@ class RAGManagerPGVector:
 
             results = []
             try:
-                # Do NOT filter by score — PGVector "relevance" can be distance or
-                # a tiny cosine-derived value; filtering often dropped all hits.
-                scored = pgvector_store.similarity_search_with_relevance_scores(clean_query, k=top_k)
+                scored = pgvector_store.similarity_search_with_relevance_scores(clean_query, k=top_k * 3 if allowed_sources else top_k)
                 for doc, score in scored:
+                    if allowed_sources and not self._source_allowed(doc, allowed_sources):
+                        continue
                     try:
                         print(f"   ↪ score={float(score):.4f} preview={doc.page_content[:80]!r}")
                     except Exception:
                         print(f"   ↪ score={score} preview={doc.page_content[:80]!r}")
                     if doc and doc.page_content:
                         results.append(doc.page_content)
+                    if len(results) >= top_k:
+                        break
             except Exception as e:
                 print(f"⚠️ scored search failed, falling back: {e}")
-                docs = pgvector_store.similarity_search(clean_query, k=top_k)
-                results = [d.page_content for d in docs if d and d.page_content]
+                docs = pgvector_store.similarity_search(clean_query, k=top_k * 3 if allowed_sources else top_k)
+                for d in docs:
+                    if allowed_sources and not self._source_allowed(d, allowed_sources):
+                        continue
+                    if d and d.page_content:
+                        results.append(d.page_content)
+                    if len(results) >= top_k:
+                        break
 
             if not results:
-                results = self._vector_sql_fallback(clean_query, user_id, top_k=top_k)
+                results = self._vector_sql_fallback(clean_query, user_id, top_k=top_k, allowed_sources=allowed_sources)
             if not results:
-                results = self._keyword_fallback(clean_query, user_id, top_k=top_k)
+                results = self._keyword_fallback(clean_query, user_id, top_k=top_k, allowed_sources=allowed_sources)
 
             print(f"📊 RAG Query results: {len(results)} documents found")
             return results
@@ -320,7 +329,19 @@ class RAGManagerPGVector:
             print(f"⚠️ Error querying documents for user {user_id}: {e}")
             return []
 
-    def query_with_variants(self, queries, user_id, top_k=8):
+    def _source_allowed(self, doc, allowed_sources):
+        if not allowed_sources:
+            return True
+        source = (doc.metadata or {}).get("source") or ""
+        src_norm = os.path.normpath(source).lower()
+        src_base = os.path.basename(src_norm)
+        for allowed in allowed_sources:
+            a_norm = os.path.normpath(allowed).lower()
+            if src_norm == a_norm or src_base == os.path.basename(a_norm):
+                return True
+        return False
+
+    def query_with_variants(self, queries, user_id, top_k=8, allowed_sources=None):
         """Run several retrieval queries and merge unique chunks (order preserved)."""
         seen = set()
         merged = []
@@ -333,7 +354,7 @@ class RAGManagerPGVector:
             return []
         per_query_k = max(top_k, 6)
         for q in variants[:4]:
-            for chunk in self.query(q, user_id, top_k=per_query_k) or []:
+            for chunk in self.query(q, user_id, top_k=per_query_k, allowed_sources=allowed_sources) or []:
                 if chunk not in seen:
                     seen.add(chunk)
                     merged.append(chunk)
@@ -343,75 +364,101 @@ class RAGManagerPGVector:
                 break
         return merged[: max(top_k, 10)]
 
-    def _vector_sql_fallback(self, query, user_id, top_k=5):
+    def _metadata_source_allowed(self, metadata, allowed_sources):
+        if not allowed_sources:
+            return True
+        if not metadata:
+            return False
+        if isinstance(metadata, str):
+            import json
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                return False
+        source = metadata.get("source") or ""
+        src_norm = os.path.normpath(source).lower()
+        src_base = os.path.basename(src_norm)
+        for allowed in allowed_sources:
+            a_norm = os.path.normpath(allowed).lower()
+            if src_norm == a_norm or src_base == os.path.basename(a_norm):
+                return True
+        return False
+
+    def _filter_doc_rows(self, rows, allowed_sources, top_k):
+        if not allowed_sources:
+            return [r[0] for r in rows[:top_k] if r and r[0]]
+        filtered = []
+        for row in rows:
+            if len(row) >= 2:
+                doc_text, meta = row[0], row[1]
+                if self._metadata_source_allowed(meta, allowed_sources):
+                    filtered.append(doc_text)
+            elif row[0]:
+                filtered.append(row[0])
+            if len(filtered) >= top_k:
+                break
+        return filtered
+
+    def _vector_sql_fallback(self, query, user_id, top_k=5, allowed_sources=None):
         """Raw pgvector cosine distance when LangChain search returns nothing."""
         try:
             import psycopg2
             collection_name = user_collection_name(user_id)
             embedding = self.embedding_model.embed_query(query)
             vector_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+            fetch_k = top_k * 5 if allowed_sources else top_k
             conn = psycopg2.connect(self.connection_string)
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT e.document
+                SELECT e.document, e.cmetadata
                 FROM langchain_pg_embedding e
                 JOIN langchain_pg_collection c ON e.collection_id = c.uuid
                 WHERE c.name = %s
                 ORDER BY e.embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (collection_name, vector_literal, top_k),
+                (collection_name, vector_literal, fetch_k),
             )
-            rows = [r[0] for r in cursor.fetchall() if r and r[0]]
-            if rows:
-                print(f"🧮 SQL vector fallback found {len(rows)} docs for user {user_id}")
-            else:
-                cursor.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM langchain_pg_embedding e
-                    JOIN langchain_pg_collection c ON e.collection_id = c.uuid
-                    WHERE c.name = %s
-                    """,
-                    (collection_name,),
-                )
-                n = cursor.fetchone()[0]
-                print(f"🧮 SQL vector fallback: 0 docs (collection has {n} chunks)")
+            rows = cursor.fetchall()
+            results = self._filter_doc_rows(rows, allowed_sources, top_k)
+            if results:
+                print(f"🧮 SQL vector fallback found {len(results)} docs for user {user_id}")
             conn.close()
-            return rows
+            return results
         except Exception as e:
             print(f"⚠️ SQL vector fallback failed: {e}")
             return []
 
-    def _keyword_fallback(self, query, user_id, top_k=5):
+    def _keyword_fallback(self, query, user_id, top_k=5, allowed_sources=None):
         """If vector search returns nothing, try simple keyword match in stored docs."""
         try:
             import psycopg2
-            # Keep short tokens (e.g. MSN, AI) — they often appear on resumes
             terms = [t for t in re.findall(r"[A-Za-z0-9\u0600-\u06FF]+", query or "") if len(t) >= 2][:10]
             if not terms:
                 return []
             collection_name = user_collection_name(user_id)
+            fetch_k = top_k * 5 if allowed_sources else top_k
             conn = psycopg2.connect(self.connection_string)
             cursor = conn.cursor()
             like_clauses = " OR ".join(["e.document ILIKE %s" for _ in terms])
             params = [collection_name] + [f"%{t}%" for t in terms]
             cursor.execute(
                 f"""
-                SELECT e.document
+                SELECT e.document, e.cmetadata
                 FROM langchain_pg_embedding e
                 JOIN langchain_pg_collection c ON e.collection_id = c.uuid
                 WHERE c.name = %s AND ({like_clauses})
                 LIMIT %s
                 """,
-                params + [top_k],
+                params + [fetch_k],
             )
-            rows = [r[0] for r in cursor.fetchall() if r and r[0]]
+            rows = cursor.fetchall()
+            results = self._filter_doc_rows(rows, allowed_sources, top_k)
             conn.close()
-            if rows:
-                print(f"🔎 Keyword fallback found {len(rows)} docs for user {user_id}")
-            return rows
+            if results:
+                print(f"🔎 Keyword fallback found {len(results)} docs for user {user_id}")
+            return results
         except Exception as e:
             print(f"⚠️ Keyword fallback failed: {e}")
             return []

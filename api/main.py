@@ -890,6 +890,17 @@ async def send_message(
     """
     if not rag_manager:
         raise HTTPException(status_code=500, detail="RAG Manager not initialized")
+    if current_user.role == RoleEnum.student:
+        if not message_data.course_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Select a course before using the AI tutor.",
+            )
+        if not _student_enrolled_in_course(db, current_user.id, message_data.course_id):
+            raise HTTPException(
+                status_code=403,
+                detail="You are not enrolled in this course.",
+            )
     try:
         top_k = message_data.top_k or 8
         
@@ -912,30 +923,11 @@ async def send_message(
         # Join context
         conversation_context = "\n".join(context_messages)
         
-        # تحديد الملفات المسموح بها حسب الدور والتخصص
-        files_query = db.query(UploadedFile)
-        if current_user.role == "faculty":
-            # Faculty can access both public (student) and private (faculty) documents
-            allowed_files = files_query.filter(
-                or_(UploadedFile.target_roles.contains(["faculty"]),
-                    UploadedFile.target_roles.contains(["student"]))
-            ).filter(UploadedFile.filename.isnot(None)).all()
-        elif current_user.role == "student":
-            # Students can only access public documents (targeted to students) matching their specialization
-            student_files_query = files_query.filter(
-                UploadedFile.target_roles.contains(["student"])
-            ).filter(UploadedFile.filename.isnot(None))
-            # Filter by specialization
-            allowed_files = student_files_query.filter(
-                or_(
-                    UploadedFile.specialization == current_user.specialization,
-                    UploadedFile.specialization.is_(None)  # Include files without specialization (for backward compatibility)
-                )
-            ).all()
-        else:
-            allowed_files = []
-        
-        file_paths = [os.path.join(UPLOADS_DIR, str(f.filename)) for f in allowed_files if f.filename is not None]
+        allowed_sources = None
+        if current_user.role == "student" and message_data.course_id:
+            allowed_sources = _student_allowed_paths_for_course(
+                db, current_user.id, message_data.course_id
+            )
 
         # Chat never indexes — indexing happens only at upload time.
         context_texts = []
@@ -949,6 +941,7 @@ async def send_message(
                 retrieval_queries,
                 current_user.id,
                 top_k=top_k or 8,
+                allowed_sources=allowed_sources,
             ) or []
             indexing_info["documents_found"] = len(context_texts)
             print(f"📄 Found {len(context_texts)} documents")
@@ -1125,6 +1118,12 @@ async def send_message_stream(
         prior_user_questions.append(msg.message)
     conversation_context = "\n".join(context_messages)
 
+    allowed_sources = None
+    if current_user.role == RoleEnum.student and message_data.course_id:
+        allowed_sources = _student_allowed_paths_for_course(
+            db, current_user.id, message_data.course_id
+        )
+
     context_texts = []
     try:
         retrieval_queries = build_retrieval_queries(
@@ -1135,6 +1134,7 @@ async def send_message_stream(
             retrieval_queries,
             current_user.id,
             top_k=top_k,
+            allowed_sources=allowed_sources,
         ) or []
         logger.info(
             f"Stream RAG user={current_user.id} role={current_user.role} "
@@ -1314,9 +1314,11 @@ async def upload_file(
                 enrollment_rows = db.query(CourseEnrollment).filter(
                     CourseEnrollment.course_id == int(course_id)
                 ).all()
+                upload_time = db_file.upload_time
                 users = [
                     db.query(User).filter(User.id == e.student_id).first()
                     for e in enrollment_rows
+                    if e.enrolled_at <= upload_time
                 ]
                 users = [u for u in users if u]
                 print(f"👥 Indexing for {len(users)} enrolled students in course {course_id}")
@@ -1360,24 +1362,9 @@ async def get_user_files(
         UploadedFile.target_roles.contains([current_user.role])
     )
     
-    # Filter by specialization for students
+    # Filter by course enrollment + upload date for students
     if current_user.role == "student":
-        enrolled_course_ids = _student_enrolled_course_ids(db, current_user.id)
-        if enrolled_course_ids:
-            files_query = files_query.filter(
-                or_(
-                    UploadedFile.course_id.in_(enrolled_course_ids),
-                    and_(
-                        UploadedFile.course_id.is_(None),
-                        or_(
-                            UploadedFile.specialization == current_user.specialization,
-                            UploadedFile.specialization.is_(None),
-                        ),
-                    ),
-                )
-            )
-        else:
-            files_query = files_query.filter(UploadedFile.id == -1)
+        files_query = files_query.filter(_student_files_access_filter(db, current_user.id))
     
     files = (
         files_query
@@ -1411,12 +1398,7 @@ async def download_file(
             "student" in file_record.target_roles
         )
     elif current_user.role == "student":
-        # Students can only access files targeted to students with matching specialization
-        has_access = (
-            "student" in file_record.target_roles and
-            (file_record.specialization == current_user.specialization or 
-             file_record.specialization is None)  # Include files without specialization
-        )
+        has_access = _student_can_download_file(db, current_user, file_record)
     
     if not has_access:
         raise HTTPException(status_code=403, detail="You do not have permission to download this file")
@@ -1603,8 +1585,9 @@ async def index_available_files(current_user: User = Depends(get_current_user), 
                     UploadedFile.target_roles.contains(["student"]))
             ).filter(UploadedFile.filename.isnot(None)).all()
         elif current_user.role == "student":
-            # Students can only access public documents (targeted to students)
-            allowed_files = files_query.filter(UploadedFile.target_roles.contains(["student"])).filter(UploadedFile.filename.isnot(None)).all()
+            allowed_files = files_query.filter(
+                _student_files_access_filter(db, current_user.id)
+            ).filter(UploadedFile.filename.isnot(None)).all()
         else:
             allowed_files = []
         
@@ -1744,23 +1727,36 @@ def _index_documents_for_users(rag_manager_instance, documents, file_paths, user
 
 
 def _reindex_course_materials_for_students(db: Session, course_id: int, student_user_ids: list) -> int:
+    """
+    Index course PDFs for newly rostered students — only files uploaded
+    AFTER each student's enrollment (no retroactive access).
+    """
     global rag_manager
     if not rag_manager or not student_user_ids:
         return 0
     files = db.query(UploadedFile).filter(UploadedFile.course_id == course_id).all()
     total = 0
-    for db_file in files:
-        file_path = os.path.join(UPLOADS_DIR, db_file.filename)
-        if not os.path.exists(file_path) and db_file.file_content:
-            with open(file_path, "wb") as out:
-                out.write(db_file.file_content)
-        if not os.path.exists(file_path):
+    for student_id in student_user_ids:
+        enrollment = db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course_id,
+            CourseEnrollment.student_id == student_id,
+        ).first()
+        if not enrollment:
             continue
-        documents = rag_manager.load_documents(file_paths=[file_path])
-        if not documents:
-            continue
-        indexed = _index_documents_for_users(rag_manager, documents, [file_path], student_user_ids)
-        total += len(indexed)
+        for db_file in files:
+            if db_file.upload_time < enrollment.enrolled_at:
+                continue
+            file_path = _uploaded_file_disk_path(db_file)
+            if not os.path.exists(file_path) and db_file.file_content:
+                with open(file_path, "wb") as out:
+                    out.write(db_file.file_content)
+            if not os.path.exists(file_path):
+                continue
+            documents = rag_manager.load_documents(file_paths=[file_path])
+            if not documents:
+                continue
+            indexed = _index_documents_for_users(rag_manager, documents, [file_path], [student_id])
+            total += len(indexed)
     return total
 
 
@@ -1776,6 +1772,62 @@ def _student_enrolled_course_ids(db: Session, student_id: int) -> list:
         CourseEnrollment.student_id == student_id
     ).all()
     return [r[0] for r in rows]
+
+
+def _uploaded_file_disk_path(db_file: UploadedFile) -> str:
+    return os.path.join(UPLOADS_DIR, db_file.filename)
+
+
+def _student_files_access_filter(db: Session, student_id: int):
+    """
+    Students only see course PDFs uploaded AFTER their enrollment date.
+    Level 1 vs Level 2 = separate courses — no cross-course access.
+    """
+    enrollments = db.query(CourseEnrollment).filter(
+        CourseEnrollment.student_id == student_id
+    ).all()
+    if not enrollments:
+        return UploadedFile.id == -1
+    clauses = []
+    for en in enrollments:
+        clauses.append(
+            and_(
+                UploadedFile.course_id == en.course_id,
+                UploadedFile.upload_time >= en.enrolled_at,
+                UploadedFile.target_roles.contains(["student"]),
+            )
+        )
+    return or_(*clauses)
+
+
+def _student_allowed_paths_for_course(db: Session, student_id: int, course_id: int) -> list:
+    """Disk paths this student may use in RAG for a given course."""
+    enrollment = db.query(CourseEnrollment).filter(
+        CourseEnrollment.student_id == student_id,
+        CourseEnrollment.course_id == course_id,
+    ).first()
+    if not enrollment:
+        return []
+    files = db.query(UploadedFile).filter(
+        UploadedFile.course_id == course_id,
+        UploadedFile.upload_time >= enrollment.enrolled_at,
+        UploadedFile.target_roles.contains(["student"]),
+    ).all()
+    return [_uploaded_file_disk_path(f) for f in files if f.filename]
+
+
+def _student_can_download_file(db: Session, student: User, file_record: UploadedFile) -> bool:
+    if "student" not in (file_record.target_roles or []):
+        return False
+    if not file_record.course_id:
+        return False
+    enrollment = db.query(CourseEnrollment).filter(
+        CourseEnrollment.student_id == student.id,
+        CourseEnrollment.course_id == file_record.course_id,
+    ).first()
+    if not enrollment:
+        return False
+    return file_record.upload_time >= enrollment.enrolled_at
 
 
 # ==================== Course Management Endpoints ====================
