@@ -27,6 +27,8 @@ const FacultyCourses = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterSpecialization, setFilterSpecialization] = useState('All');
   const [catalogLevels, setCatalogLevels] = useState([]);
+  const [levelSubjects, setLevelSubjects] = useState([]);
+  const [loadingSubjects, setLoadingSubjects] = useState(false);
 
   const [formData, setFormData] = useState({
     title: '',
@@ -38,17 +40,6 @@ const FacultyCourses = () => {
     is_active: 'active',
     thumbnail_url: ''
   });
-
-  const specializations = [
-    'Computer Science',
-    'Information Technology',
-    'Software Engineering',
-    'Data Science',
-    'Cybersecurity',
-    'Artificial Intelligence',
-    'Network Engineering',
-    'Other'
-  ];
 
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeTimeout, setScrapeTimeout] = useState(null);
@@ -142,9 +133,58 @@ const FacultyCourses = () => {
       .catch((e) => console.error('catalog levels', e));
   }, []);
 
+  // Load curriculum subjects for the selected level
+  useEffect(() => {
+    if (!formData.level) {
+      setLevelSubjects([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingSubjects(true);
+    courseAPI.getCatalogCourses(formData.level)
+      .then((res) => {
+        if (!cancelled) setLevelSubjects(res.courses || []);
+      })
+      .catch((e) => {
+        console.error('catalog courses', e);
+        if (!cancelled) setLevelSubjects([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSubjects(false);
+      });
+    return () => { cancelled = true; };
+  }, [formData.level]);
+
   useEffect(() => {
     filterCourses();
   }, [searchQuery, filterSpecialization, courses]);
+
+  const handleLevelChange = (level) => {
+    setFormData((prev) => ({
+      ...prev,
+      level,
+      specialization: '',
+    }));
+  };
+
+  const handleSubjectChange = (title) => {
+    const subject = levelSubjects.find((c) => c.title === title);
+    setFormData((prev) => ({
+      ...prev,
+      specialization: title,
+      // Auto-fill empty title from selected subject
+      title: (!prev.title || levelSubjects.some((c) => c.title === prev.title))
+        ? (title || prev.title)
+        : prev.title,
+      description: subject
+        ? `${subject.code} · ${subject.credit_hours} ساعة معتمدة`
+        : prev.description,
+    }));
+  };
+
+  const filterSpecializations = [
+    ...new Set(courses.map((c) => c.specialization).filter(Boolean)),
+  ].sort();
 
   const loadCourses = async () => {
     try {
@@ -181,6 +221,10 @@ const FacultyCourses = () => {
     e.preventDefault();
     if (!formData.level) {
       alert('Select a level for this course.');
+      return;
+    }
+    if (!formData.specialization) {
+      alert('Select a subject for this level.');
       return;
     }
     try {
@@ -296,8 +340,8 @@ const FacultyCourses = () => {
               onChange={(e) => setFilterSpecialization(e.target.value)}
               className="filter-select"
             >
-              <option value="All">All Specializations</option>
-              {specializations.map(spec => (
+              <option value="All">All Subjects</option>
+              {filterSpecializations.map(spec => (
                 <option key={spec} value={spec}>{spec}</option>
               ))}
             </select>
@@ -458,7 +502,7 @@ const FacultyCourses = () => {
                     <select
                       id="level"
                       value={formData.level}
-                      onChange={(e) => setFormData({ ...formData, level: e.target.value })}
+                      onChange={(e) => handleLevelChange(e.target.value)}
                       required
                     >
                       <option value="">Select level</option>
@@ -475,13 +519,27 @@ const FacultyCourses = () => {
                     <select
                       id="specialization"
                       value={formData.specialization}
-                      onChange={(e) => setFormData({ ...formData, specialization: e.target.value })}
+                      onChange={(e) => handleSubjectChange(e.target.value)}
                       required
+                      disabled={!formData.level || loadingSubjects}
                     >
-                      <option value="">Select Specialization</option>
-                      {specializations.map((spec) => (
-                        <option key={spec} value={spec}>{spec}</option>
+                      <option value="">
+                        {!formData.level
+                          ? 'Select level first'
+                          : loadingSubjects
+                            ? 'Loading subjects...'
+                            : 'Select subject'}
+                      </option>
+                      {levelSubjects.map((c) => (
+                        <option key={c.code} value={c.title}>
+                          {c.title} ({c.code})
+                        </option>
                       ))}
+                      {/* Keep current value visible when editing if not in catalog list */}
+                      {formData.specialization
+                        && !levelSubjects.some((c) => c.title === formData.specialization) && (
+                        <option value={formData.specialization}>{formData.specialization}</option>
+                      )}
                     </select>
                   </div>
                 </div>
