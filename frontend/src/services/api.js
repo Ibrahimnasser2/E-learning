@@ -425,6 +425,21 @@ export const courseAPI = {
     return response.data;
   },
 
+  getFacultyCurriculumCourses: async (level) => {
+    const response = await axios.get(`${API_BASE_URL}/faculty/curriculum-courses`, {
+      params: level ? { level: String(level) } : {},
+    });
+    return response.data;
+  },
+
+  addFacultyCurriculumCourses: async (level, courseCodes) => {
+    const response = await axios.post(`${API_BASE_URL}/faculty/curriculum-courses`, {
+      level: String(level),
+      course_codes: courseCodes,
+    });
+    return response.data;
+  },
+
   // Scrape metadata from URL
   scrapeMetadata: async (url) => {
     const response = await axios.get(`${API_BASE_URL}/tools/scrape-metadata`, {

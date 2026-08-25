@@ -21,7 +21,8 @@ import {
   Download,
   File,
   Users,
-  FileSpreadsheet
+  FileSpreadsheet,
+  GraduationCap
 } from 'lucide-react';
 
 const STUDENT_ASSIGN_TEMPLATE_ROWS = [
@@ -501,9 +502,82 @@ const Chat = () => {
       status: 'Success',
       file_size: f.file_size,
       file_type: f.file_type,
-      upload_time: f.upload_time
+      upload_time: f.upload_time,
+      level: f.level,
+      specialization: f.specialization,
+      courses: f.courses || [],
     }))
   ];
+
+  // Cluster documents by المقرر (course title)
+  const documentsByCourse = (() => {
+    const groups = {};
+    const order = [];
+    const push = (label, file) => {
+      if (!groups[label]) {
+        groups[label] = [];
+        order.push(label);
+      }
+      if (!groups[label].some((x) => (x.id && x.id === file.id) || (!x.id && x.name === file.name))) {
+        groups[label].push(file);
+      }
+    };
+    mergedPDFs.forEach((file) => {
+      if (file.courses && file.courses.length) {
+        file.courses.forEach((c) => {
+          push(c.title || c.course_code || 'مقرر', file);
+        });
+      } else {
+        push('مقررات أخرى', file);
+      }
+    });
+    return order.map((label) => ({ label, files: groups[label] }));
+  })();
+
+  const renderFileRow = (file, idx) => {
+    const isProcessing = file.status === 'Uploading & indexing...';
+    const isFailed = file.status === 'Indexing failed' || file.status === 'Fail to upload';
+    const isSuccess = file.status === 'Success' || (!file.status && file.id);
+    return (
+      <div
+        key={file.id || file.name + idx}
+        className={`file-row ${isProcessing ? 'is-processing' : ''} ${isFailed ? 'is-failed' : ''} ${isSuccess ? 'is-success' : ''}`}
+      >
+        <div className="file-row-icon">
+          {isProcessing ? <Loader className="spin" size={22} /> : <FileText size={22} />}
+        </div>
+        <div className="file-row-main">
+          <div className="file-row-title">{file.name || file.original_filename}</div>
+          <div className="file-row-meta">
+            {file.file_size ? <span>{formatFileSize(file.file_size)}</span> : null}
+            {file.level ? <span>Level {file.level}</span> : null}
+            {file.upload_time ? <span>{formatDate(file.upload_time)}</span> : null}
+          </div>
+          {isProcessing && (
+            <div className="file-progress" aria-hidden="true">
+              <div className="file-progress-bar" />
+            </div>
+          )}
+          {file.error && <p className="file-error-text">{file.error}</p>}
+        </div>
+        <div className="file-row-actions">
+          <span className={`status-pill ${isProcessing ? 'pending' : isFailed ? 'error' : 'ok'}`}>
+            {isProcessing ? 'Indexing' : isFailed ? 'Failed' : 'Ready'}
+          </span>
+          {file.id && !isProcessing && (
+            <button
+              type="button"
+              className="file-download-btn"
+              onClick={() => fileAPI.downloadFile(file.id)}
+              title="Download file"
+            >
+              <Download size={14} /> Download
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className={`chat-layout theme-${theme}`}>
@@ -554,15 +628,21 @@ const Chat = () => {
               <Upload size={18} />{sidebarOpen && ' Upload Materials'}
             </button>
           )}
-          {/* Course Management = independent platform (not student curriculum) */}
+          {/* Curriculum Learning Platform (level → add courses) — not Course Management */}
+          {user?.role === 'faculty' && (
+            <button className="sidebar-button" onClick={() => navigate('/courses/learning')} title="Learning Platform">
+              <GraduationCap size={18} />{sidebarOpen && ' Learning Platform'}
+            </button>
+          )}
+          {/* Course Management = independent custom library */}
           {user?.role === 'faculty' && (
             <button className="sidebar-button" onClick={() => navigate('/courses/faculty')} title="Course Management">
               <BookOpen size={18} />{sidebarOpen && ' Course Management'}
             </button>
           )}
           {user?.role === 'student' && (
-            <button className="sidebar-button" onClick={() => navigate('/courses/student')} title="Courses">
-              <BookOpen size={18} />{sidebarOpen && ' Courses'}
+            <button className="sidebar-button" onClick={() => navigate('/courses/student')} title="My Courses">
+              <BookOpen size={18} />{sidebarOpen && ' My Courses'}
             </button>
           )}
           <button className="sidebar-button" onClick={exportChatAsPDF} title="Export as PDF">
@@ -581,14 +661,6 @@ const Chat = () => {
           >
             <MessageSquare size={16} /> Chat
           </button>
-          {user?.role === 'faculty' && (
-            <button
-              className={`tab-button ${activeTab === 'files' ? 'active' : ''}`}
-              onClick={() => setActiveTab('files')}
-            >
-              <Users size={16} /> Upload Students
-            </button>
-          )}
           {user?.role === 'faculty' && (
             <button
               className={`tab-button ${activeTab === 'materials' ? 'active' : ''}`}
@@ -939,56 +1011,30 @@ const Chat = () => {
               </div>
             )}
             <div className="files-list">
-              <h3>Documents ({mergedPDFs.length})</h3>
+              <h3>
+                {user?.role === 'student' ? 'المستندات حسب المقرر' : 'Documents'}
+                {' '}({mergedPDFs.length})
+              </h3>
               {mergedPDFs.length === 0 ? (
                 <p className="empty-files">No PDF files uploaded yet.</p>
+              ) : user?.role === 'student' ? (
+                <div className="files-by-course">
+                  {documentsByCourse.map((group) => (
+                    <section key={group.label} className="course-file-cluster">
+                      <h4 className="course-file-cluster-title">
+                        <BookOpen size={18} />
+                        <span>{group.label}</span>
+                        <span className="course-file-count">{group.files.length}</span>
+                      </h4>
+                      <div className="files-list-rows">
+                        {group.files.map((file, idx) => renderFileRow(file, idx))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
               ) : (
                 <div className="files-list-rows">
-                  {mergedPDFs.map((file, idx) => {
-                    const isProcessing = file.status === 'Uploading & indexing...';
-                    const isFailed = file.status === 'Indexing failed' || file.status === 'Fail to upload';
-                    const isSuccess = file.status === 'Success' || (!file.status && file.id);
-                    return (
-                      <div
-                        key={file.id || file.name + idx}
-                        className={`file-row ${isProcessing ? 'is-processing' : ''} ${isFailed ? 'is-failed' : ''} ${isSuccess ? 'is-success' : ''}`}
-                      >
-                        <div className="file-row-icon">
-                          {isProcessing ? <Loader className="spin" size={22} /> : <FileText size={22} />}
-                        </div>
-                        <div className="file-row-main">
-                          <div className="file-row-title">{file.name || file.original_filename}</div>
-                          <div className="file-row-meta">
-                            {file.file_size ? <span>{formatFileSize(file.file_size)}</span> : null}
-                            {file.level ? <span>Level {file.level}</span> : null}
-                            {file.specialization ? <span>{file.specialization}</span> : null}
-                            {file.upload_time ? <span>{formatDate(file.upload_time)}</span> : null}
-                          </div>
-                          {isProcessing && (
-                            <div className="file-progress" aria-hidden="true">
-                              <div className="file-progress-bar" />
-                            </div>
-                          )}
-                          {file.error && <p className="file-error-text">{file.error}</p>}
-                        </div>
-                        <div className="file-row-actions">
-                          <span className={`status-pill ${isProcessing ? 'pending' : isFailed ? 'error' : 'ok'}`}>
-                            {isProcessing ? 'Indexing' : isFailed ? 'Failed' : 'Ready'}
-                          </span>
-                          {file.id && !isProcessing && (
-                            <button
-                              type="button"
-                              className="file-download-btn"
-                              onClick={() => fileAPI.downloadFile(file.id)}
-                              title="Download file"
-                            >
-                              <Download size={14} /> Download
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {mergedPDFs.map((file, idx) => renderFileRow(file, idx))}
                 </div>
               )}
             </div>

@@ -94,6 +94,12 @@ class ChatMessageResponse(BaseModel):
 class ChatHistoryResponse(BaseModel):
     messages: List[ChatMessageResponse]
 
+class FileCourseInfo(BaseModel):
+    id: int
+    title: str
+    course_code: Optional[str] = None
+
+
 class FileUploadResponse(BaseModel):
     id: int
     user_id: int
@@ -105,6 +111,7 @@ class FileUploadResponse(BaseModel):
     course_id: Optional[int] = None
     course_ids: Optional[List[int]] = None
     level: Optional[str] = None
+    courses: Optional[List[FileCourseInfo]] = None
     upload_time: datetime
 
     class Config:
@@ -196,6 +203,12 @@ class CatalogLevelsResponse(BaseModel):
 class CatalogCoursesResponse(BaseModel):
     level: str
     courses: List[CatalogCourseResponse]
+
+
+class FacultyCurriculumAddRequest(BaseModel):
+    """Faculty Learning Platform: select level → add official catalog courses."""
+    level: str
+    course_codes: List[str]
 
 class CourseListResponse(BaseModel):
     courses: List[CourseResponse]

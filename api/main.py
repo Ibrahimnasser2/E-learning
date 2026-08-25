@@ -49,7 +49,7 @@ try:
     from models import (
         UserRegister, UserLogin, UserResponse, Token,
         ChatMessageRequest, ChatMessageResponse, ChatHistoryResponse,
-        FileUploadResponse, FileListResponse,
+        FileUploadResponse, FileListResponse, FileCourseInfo,
         ChatResponse, DocumentUploadResponse, IndexStats,
         CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
         CourseEnrollmentRequest, CourseEnrollmentResponse,
@@ -57,6 +57,7 @@ try:
         AdminUploadUsersResponse, CourseRosterUploadResponse,
         FacultyStudentsUploadResponse,
         CatalogLevelsResponse, CatalogCoursesResponse, CatalogLevelResponse, CatalogCourseResponse,
+        FacultyCurriculumAddRequest,
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
@@ -77,7 +78,7 @@ except ImportError:
     from api.models import (
         UserRegister, UserLogin, UserResponse, Token,
         ChatMessageRequest, ChatMessageResponse, ChatHistoryResponse,
-        FileUploadResponse, FileListResponse,
+        FileUploadResponse, FileListResponse, FileCourseInfo,
         ChatResponse, DocumentUploadResponse, IndexStats,
         CourseCreate, CourseUpdate, CourseResponse, CourseListResponse,
         CourseEnrollmentRequest, CourseEnrollmentResponse,
@@ -85,6 +86,7 @@ except ImportError:
         AdminUploadUsersResponse, CourseRosterUploadResponse,
         FacultyStudentsUploadResponse,
         CatalogLevelsResponse, CatalogCoursesResponse, CatalogLevelResponse, CatalogCourseResponse,
+        FacultyCurriculumAddRequest,
     )
     from api.rag_manager_simple import RAGManagerPGVector
 
@@ -1419,7 +1421,10 @@ async def get_user_files(
         .order_by(UploadedFile.upload_time.desc())
         .all()
     )
-    return FileListResponse(files=[FileUploadResponse.from_orm(file) for file in files])
+    student_id = current_user.id if current_user.role == "student" else None
+    return FileListResponse(
+        files=[_file_to_response(f, db, student_id=student_id) for f in files]
+    )
 
 @app.get("/download-file/{file_id}")
 async def download_file(
@@ -1832,6 +1837,28 @@ def _file_attached_course_ids(db_file: UploadedFile) -> list:
     return list(dict.fromkeys(ids))
 
 
+def _file_to_response(db_file: UploadedFile, db: Session, student_id: int = None) -> FileUploadResponse:
+    """Serialize uploaded file and attach course titles (المقرر) for clustering."""
+    resp = FileUploadResponse.from_orm(db_file)
+    ids = _file_attached_course_ids(db_file)
+    if not ids:
+        resp.courses = []
+        return resp
+    course_rows = db.query(Course).filter(Course.id.in_(ids)).all()
+    if student_id is not None:
+        enrolled = set(_student_enrolled_course_ids(db, student_id))
+        course_rows = [c for c in course_rows if c.id in enrolled]
+    resp.courses = [
+        FileCourseInfo(
+            id=c.id,
+            title=c.title,
+            course_code=getattr(c, "course_code", None),
+        )
+        for c in course_rows
+    ]
+    return resp
+
+
 def _file_covers_course(db_file: UploadedFile, course_id: int) -> bool:
     return int(course_id) in _file_attached_course_ids(db_file)
 
@@ -1997,6 +2024,69 @@ async def get_catalog_courses(
     return CatalogCoursesResponse(level=str(level), courses=courses)
 
 
+@app.get("/faculty/curriculum-courses", response_model=CourseListResponse)
+async def get_faculty_curriculum_courses(
+    level: str = Query(None, description="Optional level filter 1–5"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Faculty Learning Platform: list curriculum courses this faculty has added (not Course Management)."""
+    if current_user.role != RoleEnum.faculty:
+        raise HTTPException(status_code=403, detail="Only faculty can view curriculum courses")
+    q = db.query(Course).filter(
+        Course.faculty_id == current_user.id,
+        Course.course_code.isnot(None),
+    )
+    if level:
+        q = q.filter(Course.level == str(level).strip())
+    courses = q.order_by(Course.level.asc(), Course.title.asc()).all()
+    responses = [
+        _course_to_response(
+            c,
+            faculty_name=current_user.username,
+            enrollment_count=db.query(CourseEnrollment).filter(
+                CourseEnrollment.course_id == c.id
+            ).count(),
+        )
+        for c in courses
+    ]
+    return CourseListResponse(courses=responses, total=len(responses))
+
+
+@app.post("/faculty/curriculum-courses", response_model=CourseListResponse)
+async def add_faculty_curriculum_courses(
+    body: FacultyCurriculumAddRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Faculty Learning Platform: select level → add official catalog courses.
+    Independent from Course Management (custom library).
+    """
+    if current_user.role != RoleEnum.faculty:
+        raise HTTPException(status_code=403, detail="Only faculty can add curriculum courses")
+    if not body.course_codes:
+        raise HTTPException(status_code=400, detail="Select at least one course")
+    added = []
+    for code in body.course_codes:
+        course = _ensure_faculty_catalog_course(
+            db, current_user, str(code).strip(), str(body.level).strip()
+        )
+        added.append(course)
+    # de-dupe by id while preserving order
+    seen = set()
+    unique = []
+    for c in added:
+        if c.id not in seen:
+            seen.add(c.id)
+            unique.append(c)
+    responses = [
+        _course_to_response(c, faculty_name=current_user.username, enrollment_count=0)
+        for c in unique
+    ]
+    return CourseListResponse(courses=responses, total=len(responses))
+
+
 @app.post("/courses", response_model=CourseResponse)
 async def create_course(
     course_data: CourseCreate,
@@ -2004,13 +2094,18 @@ async def create_course(
     db: Session = Depends(get_db)
 ):
     """
-    إنشاء كورس جديد (لأعضاء هيئة التدريس فقط)
-    يستخرج صورة الكورس تلقائياً من رابط YouTube إذا كان الكورس خارجي
+    Course Management only — custom faculty library (no curriculum course_code).
+    Curriculum courses are added via Learning Platform (level → catalog).
     """
     if current_user.role != "faculty":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only faculty members can create courses"
+        )
+    if course_data.course_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Use Learning Platform (select level → add courses) for curriculum. Course Management is a separate library.",
         )
     
     # Extract thumbnail from YouTube URL if course is external and URL is provided
@@ -2024,7 +2119,7 @@ async def create_course(
         description=course_data.description,
         specialization=course_data.specialization,
         level=str(course_data.level).strip() if course_data.level else None,
-        course_code=str(course_data.course_code).strip() if course_data.course_code else None,
+        course_code=None,  # Course Management never stores curriculum codes
         faculty_id=current_user.id,
         course_url=course_data.course_url,
         course_type=course_data.course_type or "internal",
@@ -2054,12 +2149,14 @@ async def get_my_courses(
             Course.course_code.is_(None),
         ).order_by(Course.created_at.desc()).all()
     elif current_user.role == "student":
+        # Curriculum (منهج) enrollments only — never Course Management library courses
         enrolled_ids = _student_enrolled_course_ids(db, current_user.id)
         if not enrolled_ids:
             courses = []
         else:
             courses = db.query(Course).filter(
                 Course.id.in_(enrolled_ids),
+                Course.course_code.isnot(None),
                 Course.is_active == "active",
             ).order_by(Course.created_at.desc()).all()
     else:
@@ -2103,7 +2200,11 @@ async def get_my_enrollments(
     
     enrollment_responses = []
     for enrollment in enrollments:
-        course = db.query(Course).filter(Course.id == enrollment.course_id).first()
+        # Only official curriculum courses (have course_code) — not Course Management
+        course = db.query(Course).filter(
+            Course.id == enrollment.course_id,
+            Course.course_code.isnot(None),
+        ).first()
         if course:
             faculty = db.query(User).filter(User.id == course.faculty_id).first()
             enrollment_count = db.query(CourseEnrollment).filter(
