@@ -8,6 +8,7 @@ from fpdf import FPDF
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "دليل_استخدام_منصة_مانامو.pdf"
+OUT_ALT = ROOT / "دليل_استخدام_منصة_مانامو_v2.pdf"
 FONT = Path(r"C:\Windows\Fonts\arial.ttf")
 FONT_B = Path(r"C:\Windows\Fonts\arialbd.ttf")
 
@@ -366,8 +367,14 @@ def build():
     pdf.set_x(pdf.l_margin)
     pdf.multi_cell(0, 6, ar("منصة مانامو التعليمية — دليل استخدام للعميل"), align="C")
 
-    pdf.output(str(OUT))
-    print(f"Wrote: {OUT}")
+    target = OUT
+    try:
+        pdf.output(str(OUT))
+    except PermissionError:
+        target = OUT_ALT
+        pdf.output(str(OUT_ALT))
+        print(f"Original PDF locked; wrote: {OUT_ALT}")
+    print(f"Wrote: {target}")
 
 
 if __name__ == "__main__":
