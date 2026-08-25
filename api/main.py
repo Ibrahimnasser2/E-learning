@@ -57,7 +57,6 @@ try:
         AdminUploadUsersResponse, CourseRosterUploadResponse,
         FacultyStudentsUploadResponse,
         CatalogLevelsResponse, CatalogCoursesResponse, CatalogLevelResponse, CatalogCourseResponse,
-        FacultyCurriculumAddRequest,
     )
     from rag_manager_simple import RAGManagerPGVector
 except ImportError:
@@ -86,7 +85,6 @@ except ImportError:
         AdminUploadUsersResponse, CourseRosterUploadResponse,
         FacultyStudentsUploadResponse,
         CatalogLevelsResponse, CatalogCoursesResponse, CatalogLevelResponse, CatalogCourseResponse,
-        FacultyCurriculumAddRequest,
     )
     from api.rag_manager_simple import RAGManagerPGVector
 
@@ -1996,7 +1994,71 @@ def _ensure_faculty_catalog_course(db: Session, faculty_user: User, course_code:
     return course
 
 
-# ==================== Course Management Endpoints ====================
+# ==================== Learning Platform Endpoints ====================
+
+def _valid_level_ids():
+    try:
+        from curriculum_catalog import get_levels
+    except ImportError:
+        from api.curriculum_catalog import get_levels
+    return {lv["id"] for lv in get_levels()}
+
+
+def _enroll_level_students_in_course(db: Session, course: Course) -> int:
+    """Enroll every student whose User.level matches the course level."""
+    if not course.level:
+        return 0
+    students = db.query(User).filter(
+        User.role == RoleEnum.student,
+        User.level == str(course.level).strip(),
+    ).all()
+    linked = 0
+    for student in students:
+        existing = db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course.id,
+            CourseEnrollment.student_id == student.id,
+        ).first()
+        if existing:
+            continue
+        db.add(CourseEnrollment(
+            student_id=student.id,
+            course_id=course.id,
+            level=str(course.level).strip(),
+            progress=0,
+        ))
+        linked += 1
+    if linked:
+        db.commit()
+    return linked
+
+
+def _sync_student_to_level_courses(db: Session, student: User) -> int:
+    """Enroll student in all Learning Platform courses matching their level."""
+    if not student.level:
+        return 0
+    courses = db.query(Course).filter(
+        Course.level == str(student.level).strip(),
+        Course.course_code.is_(None),
+        Course.is_active == "active",
+    ).all()
+    linked = 0
+    for course in courses:
+        existing = db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course.id,
+            CourseEnrollment.student_id == student.id,
+        ).first()
+        if existing:
+            existing.level = str(student.level).strip()
+            continue
+        db.add(CourseEnrollment(
+            student_id=student.id,
+            course_id=course.id,
+            level=str(student.level).strip(),
+            progress=0,
+        ))
+        linked += 1
+    return linked
+
 
 @app.get("/catalog/levels", response_model=CatalogLevelsResponse)
 async def get_catalog_levels(current_user: User = Depends(get_current_user)):
@@ -2024,69 +2086,6 @@ async def get_catalog_courses(
     return CatalogCoursesResponse(level=str(level), courses=courses)
 
 
-@app.get("/faculty/curriculum-courses", response_model=CourseListResponse)
-async def get_faculty_curriculum_courses(
-    level: str = Query(None, description="Optional level filter 1–5"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Faculty Learning Platform: list curriculum courses this faculty has added (not Course Management)."""
-    if current_user.role != RoleEnum.faculty:
-        raise HTTPException(status_code=403, detail="Only faculty can view curriculum courses")
-    q = db.query(Course).filter(
-        Course.faculty_id == current_user.id,
-        Course.course_code.isnot(None),
-    )
-    if level:
-        q = q.filter(Course.level == str(level).strip())
-    courses = q.order_by(Course.level.asc(), Course.title.asc()).all()
-    responses = [
-        _course_to_response(
-            c,
-            faculty_name=current_user.username,
-            enrollment_count=db.query(CourseEnrollment).filter(
-                CourseEnrollment.course_id == c.id
-            ).count(),
-        )
-        for c in courses
-    ]
-    return CourseListResponse(courses=responses, total=len(responses))
-
-
-@app.post("/faculty/curriculum-courses", response_model=CourseListResponse)
-async def add_faculty_curriculum_courses(
-    body: FacultyCurriculumAddRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Faculty Learning Platform: select level → add official catalog courses.
-    Independent from Course Management (custom library).
-    """
-    if current_user.role != RoleEnum.faculty:
-        raise HTTPException(status_code=403, detail="Only faculty can add curriculum courses")
-    if not body.course_codes:
-        raise HTTPException(status_code=400, detail="Select at least one course")
-    added = []
-    for code in body.course_codes:
-        course = _ensure_faculty_catalog_course(
-            db, current_user, str(code).strip(), str(body.level).strip()
-        )
-        added.append(course)
-    # de-dupe by id while preserving order
-    seen = set()
-    unique = []
-    for c in added:
-        if c.id not in seen:
-            seen.add(c.id)
-            unique.append(c)
-    responses = [
-        _course_to_response(c, faculty_name=current_user.username, enrollment_count=0)
-        for c in unique
-    ]
-    return CourseListResponse(courses=responses, total=len(responses))
-
-
 @app.post("/courses", response_model=CourseResponse)
 async def create_course(
     course_data: CourseCreate,
@@ -2094,43 +2093,51 @@ async def create_course(
     db: Session = Depends(get_db)
 ):
     """
-    Course Management only — custom faculty library (no curriculum course_code).
-    Curriculum courses are added via Learning Platform (level → catalog).
+    Learning Platform: faculty creates a course and must select a level.
+    Students of that level see the course automatically.
     """
     if current_user.role != "faculty":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only faculty members can create courses"
         )
-    if course_data.course_code:
+    if not course_data.level or str(course_data.level).strip() not in _valid_level_ids():
         raise HTTPException(
             status_code=400,
-            detail="Use Learning Platform (select level → add courses) for curriculum. Course Management is a separate library.",
+            detail="Select a valid level (1–5) when creating a course.",
         )
-    
-    # Extract thumbnail from YouTube URL if course is external and URL is provided
+
     thumbnail_url = course_data.thumbnail_url
     if course_data.course_type == "external" and course_data.course_url and not thumbnail_url:
         thumbnail_url = extract_youtube_thumbnail(course_data.course_url)
         logger.info(f"📸 Extracted thumbnail for external course: {thumbnail_url}")
-    
+
+    level_val = str(course_data.level).strip()
     db_course = Course(
         title=course_data.title,
         description=course_data.description,
         specialization=course_data.specialization,
-        level=str(course_data.level).strip() if course_data.level else None,
-        course_code=None,  # Course Management never stores curriculum codes
+        level=level_val,
+        course_code=None,
         faculty_id=current_user.id,
         course_url=course_data.course_url,
         course_type=course_data.course_type or "internal",
-        thumbnail_url=thumbnail_url
+        thumbnail_url=thumbnail_url,
+        is_active="active",
     )
-    
+
     db.add(db_course)
     db.commit()
     db.refresh(db_course)
-    
-    return _course_to_response(db_course, faculty_name=current_user.username, enrollment_count=0)
+
+    enrolled = _enroll_level_students_in_course(db, db_course)
+
+    return _course_to_response(
+        db_course,
+        faculty_name=current_user.username,
+        enrollment_count=enrolled,
+    )
+
 
 @app.get("/courses/my-courses", response_model=CourseListResponse)
 async def get_my_courses(
@@ -2138,96 +2145,102 @@ async def get_my_courses(
     db: Session = Depends(get_db)
 ):
     """
-    الحصول على الكورسات الخاصة بالمستخدم:
-    - لأعضاء هيئة التدريس: جميع الكورسات التي أنشأوها
-    - للطلاب: الكورسات المطابقة لتخصصهم
+    Learning Platform courses:
+    - Faculty: courses they created (with a level)
+    - Students: courses for their level only
     """
     if current_user.role == "faculty":
-        # Course Management platform: faculty-owned courses only (not curriculum catalog clones)
         courses = db.query(Course).filter(
             Course.faculty_id == current_user.id,
             Course.course_code.is_(None),
+            Course.level.isnot(None),
         ).order_by(Course.created_at.desc()).all()
     elif current_user.role == "student":
-        # Curriculum (منهج) enrollments only — never Course Management library courses
-        enrolled_ids = _student_enrolled_course_ids(db, current_user.id)
-        if not enrolled_ids:
+        if not current_user.level:
             courses = []
         else:
             courses = db.query(Course).filter(
-                Course.id.in_(enrolled_ids),
-                Course.course_code.isnot(None),
+                Course.level == str(current_user.level).strip(),
+                Course.course_code.is_(None),
                 Course.is_active == "active",
             ).order_by(Course.created_at.desc()).all()
     else:
         courses = []
-    
-    # إضافة معلومات إضافية لكل كورس
+
     course_responses = []
     for course in courses:
         enrollment_count = db.query(CourseEnrollment).filter(
             CourseEnrollment.course_id == course.id
         ).count()
-        
+
         faculty = db.query(User).filter(User.id == course.faculty_id).first()
         faculty_name = faculty.username if faculty else "Unknown"
-        
+
         course_responses.append(_course_to_response(
             course,
             faculty_name=faculty_name,
             enrollment_count=enrollment_count,
         ))
-    
+
     return CourseListResponse(courses=course_responses, total=len(course_responses))
+
 
 @app.get("/courses/my-enrollments")
 async def get_my_enrollments(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    الحصول على الكورسات المسجل فيها الطالب
-    """
+    """Student Learning Platform: courses for the student's level only."""
     if current_user.role != "student":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only students can view enrollments"
         )
-    
-    enrollments = db.query(CourseEnrollment).filter(
-        CourseEnrollment.student_id == current_user.id
-    ).order_by(CourseEnrollment.enrolled_at.desc()).all()
-    
+
+    if not current_user.level:
+        return []
+
+    # Keep enrollments in sync with Learning Platform courses for this level
+    _sync_student_to_level_courses(db, current_user)
+    db.commit()
+
+    level_val = str(current_user.level).strip()
+    courses = db.query(Course).filter(
+        Course.level == level_val,
+        Course.course_code.is_(None),
+        Course.is_active == "active",
+    ).order_by(Course.created_at.desc()).all()
+
     enrollment_responses = []
-    for enrollment in enrollments:
-        # Only official curriculum courses (have course_code) — not Course Management
-        course = db.query(Course).filter(
-            Course.id == enrollment.course_id,
-            Course.course_code.isnot(None),
+    for course in courses:
+        enrollment = db.query(CourseEnrollment).filter(
+            CourseEnrollment.student_id == current_user.id,
+            CourseEnrollment.course_id == course.id,
         ).first()
-        if course:
-            faculty = db.query(User).filter(User.id == course.faculty_id).first()
-            enrollment_count = db.query(CourseEnrollment).filter(
-                CourseEnrollment.course_id == course.id
-            ).count()
-            
-            course_response = _course_to_response(
-                course,
-                faculty_name=faculty.username if faculty else "Unknown",
-                enrollment_count=enrollment_count,
-            )
-            enrollment_responses.append(CourseEnrollmentResponse(
-                id=enrollment.id,
-                student_id=enrollment.student_id,
-                course_id=enrollment.course_id,
-                enrolled_at=enrollment.enrolled_at,
-                progress=enrollment.progress,
-                section_number=enrollment.section_number,
-                level=getattr(enrollment, "level", None),
-                course=course_response
-            ))
-    
+        if not enrollment:
+            continue
+        faculty = db.query(User).filter(User.id == course.faculty_id).first()
+        enrollment_count = db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course.id
+        ).count()
+        course_response = _course_to_response(
+            course,
+            faculty_name=faculty.username if faculty else "Unknown",
+            enrollment_count=enrollment_count,
+        )
+        enrollment_responses.append(CourseEnrollmentResponse(
+            id=enrollment.id,
+            student_id=enrollment.student_id,
+            course_id=enrollment.course_id,
+            enrolled_at=enrollment.enrolled_at,
+            progress=enrollment.progress,
+            section_number=enrollment.section_number,
+            level=getattr(enrollment, "level", None) or level_val,
+            course=course_response,
+        ))
+
     return enrollment_responses
+
 
 @app.get("/courses/{course_id}", response_model=CourseResponse)
 async def get_course(
@@ -2244,9 +2257,9 @@ async def get_course(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Course not found"
         )
-    
+
     if current_user.role == "student":
-        if not _student_enrolled_in_course(db, current_user.id, course.id):
+        if not current_user.level or str(course.level) != str(current_user.level).strip():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have access to this course"
@@ -2257,14 +2270,14 @@ async def get_course(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only view your own courses"
             )
-    
+
     enrollment_count = db.query(CourseEnrollment).filter(
         CourseEnrollment.course_id == course.id
     ).count()
-    
+
     faculty = db.query(User).filter(User.id == course.faculty_id).first()
     faculty_name = faculty.username if faculty else "Unknown"
-    
+
     return _course_to_response(course, faculty_name=faculty_name, enrollment_count=enrollment_count)
 
 @app.put("/courses/{course_id}", response_model=CourseResponse)
@@ -2304,9 +2317,10 @@ async def update_course(
     if course_data.specialization is not None:
         course.specialization = course_data.specialization
     if course_data.level is not None:
-        course.level = str(course_data.level).strip() or None
-    if course_data.course_code is not None:
-        course.course_code = str(course_data.course_code).strip() or None
+        new_level = str(course_data.level).strip() or None
+        if new_level and new_level not in _valid_level_ids():
+            raise HTTPException(status_code=400, detail="Invalid level. Use 1–5.")
+        course.level = new_level
     if course_data.course_url is not None:
         course.course_url = course_data.course_url
     if course_data.is_active is not None:
@@ -2324,7 +2338,10 @@ async def update_course(
     course.updated_at = datetime.now()
     db.commit()
     db.refresh(course)
-    
+    if course.level:
+        _enroll_level_students_in_course(db, course)
+        db.refresh(course)
+
     enrollment_count = db.query(CourseEnrollment).filter(
         CourseEnrollment.course_id == course.id
     ).count()
@@ -2602,6 +2619,20 @@ async def faculty_upload_students(
             })
             continue
 
+        student = _find_student_by_university_id(db, student_id_val)
+        if not student:
+            errors.append({
+                "row": row_num,
+                "university_id": student_id_val,
+                "reason": "Student ID not found",
+            })
+            continue
+
+        student.level = str(level_val).strip()
+        # Learning Platform: enroll in faculty-created courses for this level
+        row_linked = _sync_student_to_level_courses(db, student)
+        linked += row_linked
+
         refs = _parse_course_refs_cell(course_ids_raw)
         course_ids = list(refs["ids"])
         for code in refs["codes"]:
@@ -2616,25 +2647,7 @@ async def faculty_upload_students(
                     "reason": he.detail if isinstance(he.detail, str) else str(he.detail),
                 })
         course_ids = list(dict.fromkeys(course_ids))
-        if not course_ids:
-            errors.append({
-                "row": row_num,
-                "university_id": student_id_val,
-                "reason": "Missing course IDs or codes",
-            })
-            continue
 
-        student = _find_student_by_university_id(db, student_id_val)
-        if not student:
-            errors.append({
-                "row": row_num,
-                "university_id": student_id_val,
-                "reason": "Student ID not found",
-            })
-            continue
-
-        student.level = str(level_val).strip()
-        row_linked = 0
         for cid in course_ids:
             if cid not in owned_course_ids:
                 errors.append({
@@ -2674,10 +2687,7 @@ async def faculty_upload_students(
         if row_linked == 0 and not any(e.get("row") == row_num for e in errors):
             skipped += 1
 
-    if linked:
-        db.commit()
-    else:
-        db.rollback()
+    db.commit()
 
     reindexed = 0
     for cid, student_ids in newly_by_course.items():

@@ -6,7 +6,6 @@ import Login from './pages/Login';
 import Chat from './pages/Chat';
 import AdminConsole from './pages/AdminConsole';
 import FacultyCourses from './pages/FacultyCourses';
-import FacultyLearningPlatform from './pages/FacultyLearningPlatform';
 import StudentCourses from './pages/StudentCourses';
 import './App.css';
 
@@ -72,14 +71,6 @@ function App() {
             <Route path="/upload-faculty" element={<Navigate to="/admin" replace />} />
             <Route path="/upload-staff" element={<Navigate to="/admin" replace />} />
             <Route
-              path="/courses/learning"
-              element={
-                <ProtectedRoute blockAdmin>
-                  <FacultyLearningPlatform />
-                </ProtectedRoute>
-              }
-            />
-            <Route
               path="/courses/faculty"
               element={
                 <ProtectedRoute blockAdmin>
@@ -87,6 +78,7 @@ function App() {
                 </ProtectedRoute>
               }
             />
+            <Route path="/courses/learning" element={<Navigate to="/courses/faculty" replace />} />
             <Route
               path="/courses/student"
               element={

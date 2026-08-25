@@ -252,6 +252,14 @@ def create_tables():
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_university_id "
                 "ON users (university_id) WHERE university_id IS NOT NULL"
             ))
+            # Remove legacy courses with no level — Learning Platform requires level
+            conn.execute(text(
+                "DELETE FROM course_enrollments WHERE course_id IN "
+                "(SELECT id FROM courses WHERE level IS NULL)"
+            ))
+            conn.execute(text(
+                "DELETE FROM courses WHERE level IS NULL"
+            ))
             # Postgres enum migration for admin role
             conn.execute(text(
                 "DO $$ BEGIN "

@@ -12,6 +12,7 @@ import {
   Filter,
   Globe,
   Lock,
+  GraduationCap,
 } from 'lucide-react';
 import './FacultyCourses.css';
 
@@ -25,11 +26,13 @@ const FacultyCourses = () => {
   const [editingCourse, setEditingCourse] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterSpecialization, setFilterSpecialization] = useState('All');
+  const [catalogLevels, setCatalogLevels] = useState([]);
 
   const [formData, setFormData] = useState({
     title: '',
     description: '',
     specialization: '',
+    level: '',
     course_url: '',
     course_type: 'internal',
     is_active: 'active',
@@ -134,6 +137,9 @@ const FacultyCourses = () => {
 
   useEffect(() => {
     loadCourses();
+    courseAPI.getCatalogLevels()
+      .then((res) => setCatalogLevels(res.levels || []))
+      .catch((e) => console.error('catalog levels', e));
   }, []);
 
   useEffect(() => {
@@ -173,6 +179,10 @@ const FacultyCourses = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.level) {
+      alert('Select a level for this course.');
+      return;
+    }
     try {
       if (editingCourse) {
         await courseAPI.updateCourse(editingCourse.id, formData);
@@ -185,7 +195,7 @@ const FacultyCourses = () => {
       loadCourses();
     } catch (error) {
       console.error('Error saving course:', error);
-      alert('Failed to save course. Please try again.');
+      alert(error.response?.data?.detail || 'Failed to save course. Please try again.');
     }
   };
 
@@ -195,6 +205,7 @@ const FacultyCourses = () => {
       title: course.title,
       description: course.description || '',
       specialization: course.specialization,
+      level: course.level || '',
       course_url: course.course_url || '',
       course_type: course.course_type || 'internal',
       is_active: course.is_active || 'active',
@@ -219,6 +230,7 @@ const FacultyCourses = () => {
       title: '',
       description: '',
       specialization: '',
+      level: '',
       course_url: '',
       course_type: 'internal',
       is_active: 'active',
@@ -247,11 +259,11 @@ const FacultyCourses = () => {
         <header className="page-header">
           <div className="header-content">
             <h1 className="page-title">
-              <BookOpen className="icon-lg" />
-              <span>Course Management</span>
+              <GraduationCap className="icon-lg" />
+              <span>Learning Platform</span>
             </h1>
             <p className="page-subtitle">
-              Independent course library — create and manage your content (not linked to student curriculum)
+              Create courses with a level — students of that level will see them
             </p>
           </div>
           <div className="header-actions">
@@ -297,11 +309,11 @@ const FacultyCourses = () => {
             <div className="empty-icon-wrapper">
               <BookOpen size={48} />
             </div>
-            <h2>No courses found</h2>
+            <h2>No courses yet</h2>
             <p>
               {searchQuery || filterSpecialization !== 'All'
                 ? "Try adjusting your search or filters"
-                : "Start by creating your first course"}
+                : "Create a course and select its level. It will appear for students of that level only."}
             </p>
             {!searchQuery && filterSpecialization === 'All' && (
               <button className="btn btn-primary" onClick={openNewCourseModal}>
@@ -377,6 +389,15 @@ const FacultyCourses = () => {
 
                   <div className="course-meta">
                     <div className="meta-item">
+                      <span className="meta-label">Level</span>
+                      <span className="meta-value">
+                        {course.level
+                          ? (catalogLevels.find((l) => String(l.id) === String(course.level))?.label_ar
+                            || `Level ${course.level}`)
+                          : '—'}
+                      </span>
+                    </div>
+                    <div className="meta-item">
                       <span className="meta-label">Specialization</span>
                       <span className="meta-value">{course.specialization}</span>
                     </div>
@@ -433,6 +454,23 @@ const FacultyCourses = () => {
 
                 <div className="form-row">
                   <div className="form-group">
+                    <label htmlFor="level">Level *</label>
+                    <select
+                      id="level"
+                      value={formData.level}
+                      onChange={(e) => setFormData({ ...formData, level: e.target.value })}
+                      required
+                    >
+                      <option value="">Select level</option>
+                      {catalogLevels.map((lv) => (
+                        <option key={lv.id} value={lv.id}>
+                          {lv.label_ar || lv.label_en || `Level ${lv.id}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group">
                     <label htmlFor="specialization">Specialization *</label>
                     <select
                       id="specialization"
@@ -446,7 +484,9 @@ const FacultyCourses = () => {
                       ))}
                     </select>
                   </div>
+                </div>
 
+                <div className="form-row">
                   <div className="form-group">
                     <label htmlFor="course_type">Course Type</label>
                     <select

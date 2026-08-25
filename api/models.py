@@ -204,12 +204,6 @@ class CatalogCoursesResponse(BaseModel):
     level: str
     courses: List[CatalogCourseResponse]
 
-
-class FacultyCurriculumAddRequest(BaseModel):
-    """Faculty Learning Platform: select level → add official catalog courses."""
-    level: str
-    course_codes: List[str]
-
 class CourseListResponse(BaseModel):
     courses: List[CourseResponse]
     total: int

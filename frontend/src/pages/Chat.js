@@ -628,16 +628,9 @@ const Chat = () => {
               <Upload size={18} />{sidebarOpen && ' Upload Materials'}
             </button>
           )}
-          {/* Curriculum Learning Platform (level → add courses) — not Course Management */}
           {user?.role === 'faculty' && (
-            <button className="sidebar-button" onClick={() => navigate('/courses/learning')} title="Learning Platform">
+            <button className="sidebar-button" onClick={() => navigate('/courses/faculty')} title="Learning Platform">
               <GraduationCap size={18} />{sidebarOpen && ' Learning Platform'}
-            </button>
-          )}
-          {/* Course Management = independent custom library */}
-          {user?.role === 'faculty' && (
-            <button className="sidebar-button" onClick={() => navigate('/courses/faculty')} title="Course Management">
-              <BookOpen size={18} />{sidebarOpen && ' Course Management'}
             </button>
           )}
           {user?.role === 'student' && (

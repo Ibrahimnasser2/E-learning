@@ -96,10 +96,10 @@ const StudentCourses = () => {
           <div className="header-content">
             <h1 className="page-title">
               <GraduationCap className="icon-lg" />
-              <span>مقرراتك</span>
+              <span>Learning Platform</span>
             </h1>
             <p className="page-subtitle">
-              مقررات المنهج المسندة لك من الدكتور (ليست Course Management)
+              Courses for your level — created by your instructors
             </p>
           </div>
           <button className="btn btn-secondary" onClick={() => navigate('/chat')}>
@@ -141,8 +141,11 @@ const StudentCourses = () => {
                 <div className="empty-icon-wrapper">
                   <Clock size={48} />
                 </div>
-                <h2>لا مقررات بعد</h2>
-                <p>سيظهر مقررك هنا بعد أن يرفعه الدكتور عبر Upload Students (المستوى + المقررات).</p>
+                <h2>No courses yet</h2>
+                <p>
+                  When your instructor creates a Learning Platform course for your level,
+                  it will appear here. Your level comes from Upload Students.
+                </p>
               </div>
             ) : (
               <div className="courses-grid">
@@ -190,10 +193,9 @@ const StudentCourses = () => {
 
                       <div className="course-card-body">
                         <h3 className="course-title" title={course.title}>{course.title}</h3>
-                        {(course.course_code || course.level) && (
+                        {(course.level) && (
                           <p className="course-code-line">
-                            {course.course_code}
-                            {course.level ? ` · المستوى ${course.level}` : ''}
+                            المستوى {course.level}
                           </p>
                         )}
 
@@ -214,8 +216,8 @@ const StudentCourses = () => {
 
                         <div className="course-meta">
                           <div className="meta-item">
-                            <span className="meta-label">المنهج</span>
-                            <span className="meta-value">مقرر رسمي</span>
+                            <span className="meta-label">Instructor</span>
+                            <span className="meta-value">{course.faculty_name || 'Faculty'}</span>
                           </div>
                         </div>
                       </div>
